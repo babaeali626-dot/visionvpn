@@ -14,7 +14,7 @@ env:
   SING_BOX_VERSION: "v1.10.7"
   LYREBIRD_VERSION: "lyrebird-0.5.0"
   SNOWFLAKE_VERSION: "v2.10.1"
-  PSIPHON_TAG: "v2.0.28"
+  PSIPHON_TAG: "v2.0.41"
   ANDROID_NDK_VERSION: "28.0.13004108"
   GOPROXY: "https://proxy.golang.org|direct"
 
@@ -70,6 +70,38 @@ jobs:
               delay=$((delay * 2))
             done
           }
+          download_go_mods() {
+            local mod_dir="$1"
+            if [[ ! -f "${mod_dir}/go.mod" ]]; then
+              echo "ERROR: Expected go.mod missing in module root: ${mod_dir}" >&2
+              return 2
+            fi
+            (
+              cd "$mod_dir"
+              local max_attempts=5 delay=5 attempt=1 out="" status=0
+              while true; do
+                if out=$(go mod download 2>&1); then
+                  [[ -n "$out" ]] && echo "$out"
+                  return 0
+                else
+                  status=$?
+                fi
+                echo "$out" >&2
+                if grep -Eqi "no modules specified|go\.mod file not found|invalid go version|cannot find module" <<< "$out"; then
+                  echo "Deterministic Go module error detected; aborting without retry." >&2
+                  return "$status"
+                fi
+                if [ "$attempt" -ge "$max_attempts" ]; then
+                  echo "go mod download failed after ${attempt} attempts in ${mod_dir}" >&2
+                  return "$status"
+                fi
+                echo "Transient go mod download failure (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..." >&2
+                sleep "$delay"
+                attempt=$((attempt + 1))
+                delay=$((delay * 2))
+              done
+            )
+          }
           export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"
           export CGO_LDFLAGS="-Wl,-z,max-page-size=16384"
           mkdir -p app/libs
@@ -79,8 +111,8 @@ jobs:
           rm -rf /tmp/sing-box
           retry git clone --depth 1 --single-branch --branch "${SING_BOX_VERSION}" https://github.com/SagerNet/sing-box.git /tmp/sing-box
           echo "sing-box-commit=$(git -C /tmp/sing-box rev-parse HEAD)" >> /tmp/resolved-commits.txt
+          download_go_mods /tmp/sing-box
           cd /tmp/sing-box
-          retry go mod download
           retry go run ./cmd/internal/build_libbox -target android -platform android/arm64,android/arm,android/amd64
           cp libbox.aar "${GITHUB_WORKSPACE}/app/libs/libbox.aar"
 
@@ -100,6 +132,38 @@ jobs:
               attempt=$((attempt + 1))
               delay=$((delay * 2))
             done
+          }
+          download_go_mods() {
+            local mod_dir="$1"
+            if [[ ! -f "${mod_dir}/go.mod" ]]; then
+              echo "ERROR: Expected go.mod missing in module root: ${mod_dir}" >&2
+              return 2
+            fi
+            (
+              cd "$mod_dir"
+              local max_attempts=5 delay=5 attempt=1 out="" status=0
+              while true; do
+                if out=$(go mod download 2>&1); then
+                  [[ -n "$out" ]] && echo "$out"
+                  return 0
+                else
+                  status=$?
+                fi
+                echo "$out" >&2
+                if grep -Eqi "no modules specified|go\.mod file not found|invalid go version|cannot find module" <<< "$out"; then
+                  echo "Deterministic Go module error detected; aborting without retry." >&2
+                  return "$status"
+                fi
+                if [ "$attempt" -ge "$max_attempts" ]; then
+                  echo "go mod download failed after ${attempt} attempts in ${mod_dir}" >&2
+                  return "$status"
+                fi
+                echo "Transient go mod download failure (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..." >&2
+                sleep "$delay"
+                attempt=$((attempt + 1))
+                delay=$((delay * 2))
+              done
+            )
           }
           export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"
           export NDK_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -138,8 +202,8 @@ jobs:
           rm -rf /tmp/lyrebird
           retry git clone --depth 1 --single-branch --branch "${LYREBIRD_VERSION}" https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird.git /tmp/lyrebird
           echo "lyrebird-commit=$(git -C /tmp/lyrebird rev-parse HEAD)" >> /tmp/resolved-commits.txt
+          download_go_mods /tmp/lyrebird
           cd /tmp/lyrebird
-          retry go mod download
           build_android_go arm64 "${GITHUB_WORKSPACE}/app/src/main/jniLibs/arm64-v8a/liblyrebird.so" ./cmd/lyrebird
           build_android_go arm "${GITHUB_WORKSPACE}/app/src/main/jniLibs/armeabi-v7a/liblyrebird.so" ./cmd/lyrebird
           build_android_go amd64 "${GITHUB_WORKSPACE}/app/src/main/jniLibs/x86_64/liblyrebird.so" ./cmd/lyrebird
@@ -151,11 +215,11 @@ jobs:
           rm -rf /tmp/snowflake
           retry git clone --depth 1 --single-branch --branch "${SNOWFLAKE_VERSION}" https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake.git /tmp/snowflake
           echo "snowflake-commit=$(git -C /tmp/snowflake rev-parse HEAD)" >> /tmp/resolved-commits.txt
-          cd /tmp/snowflake/client
-          retry go mod download
-          build_android_go arm64 "${GITHUB_WORKSPACE}/app/src/main/jniLibs/arm64-v8a/libsnowflake.so" . "-checklinkname=0"
-          build_android_go arm "${GITHUB_WORKSPACE}/app/src/main/jniLibs/armeabi-v7a/libsnowflake.so" . "-checklinkname=0"
-          build_android_go amd64 "${GITHUB_WORKSPACE}/app/src/main/jniLibs/x86_64/libsnowflake.so" . "-checklinkname=0"
+          download_go_mods /tmp/snowflake
+          cd /tmp/snowflake
+          build_android_go arm64 "${GITHUB_WORKSPACE}/app/src/main/jniLibs/arm64-v8a/libsnowflake.so" ./client "-checklinkname=0"
+          build_android_go arm "${GITHUB_WORKSPACE}/app/src/main/jniLibs/armeabi-v7a/libsnowflake.so" ./client "-checklinkname=0"
+          build_android_go amd64 "${GITHUB_WORKSPACE}/app/src/main/jniLibs/x86_64/libsnowflake.so" ./client "-checklinkname=0"
 
       - name: Build pinned Psiphon tunnel-core for all advertised ABIs
         run: |
@@ -174,6 +238,43 @@ jobs:
               delay=$((delay * 2))
             done
           }
+          download_go_mods() {
+            local mod_dir="$1"
+            if [[ ! -f "${mod_dir}/go.mod" ]]; then
+              echo "ERROR: Expected go.mod missing in module root: ${mod_dir}" >&2
+              echo "Verify PSIPHON_TAG (${PSIPHON_TAG}) is a Go-module-enabled release." >&2
+              return 2
+            fi
+            (
+              cd "$mod_dir"
+              local max_attempts=5 delay=5 attempt=1 out="" status=0
+              while true; do
+                if out=$(go mod download 2>&1); then
+                  [[ -n "$out" ]] && echo "$out"
+                  return 0
+                else
+                  status=$?
+                fi
+                echo "$out" >&2
+                if grep -Eqi "no modules specified|go\.mod file not found|invalid go version|cannot find module" <<< "$out"; then
+                  echo "Deterministic Go module error detected; aborting without retry." >&2
+                  return "$status"
+                fi
+                if [ "$attempt" -ge "$max_attempts" ]; then
+                  echo "go mod download failed after ${attempt} attempts in ${mod_dir}" >&2
+                  return "$status"
+                fi
+                echo "Transient go mod download failure (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..." >&2
+                sleep "$delay"
+                attempt=$((attempt + 1))
+                delay=$((delay * 2))
+              done
+            )
+          }
+          # Psiphon tunnel-core's psiphon-tls requires the exact Go toolchain declared in its go.mod.
+          # Enabling GOTOOLCHAIN=auto strictly in this step ensures Go fetches the matching toolchain
+          # without altering Go 1.23 used by Sing-box, Lyrebird, and Snowflake.
+          export GOTOOLCHAIN=auto
           export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"
           export NDK_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
           build_android_go() {
@@ -194,7 +295,7 @@ jobs:
             if [[ "$goarch" == "arm64" || "$goarch" == "amd64" ]]; then
               ldflags="${ldflags} -extldflags '-Wl,-z,max-page-size=16384'"
             fi
-            echo "Building Android/$goarch with CGO and NDK compiler: $cc (ldflags: $ldflags)"
+            echo "Building Psiphon ConsoleClient Android/$goarch with CGO and NDK compiler: $cc (ldflags: $ldflags)"
             if [[ "$goarch" == "arm" ]]; then
               CGO_ENABLED=1 CC="$cc" CXX="$cxx" GOOS=android GOARCH=arm GOARM=7 \
                 go build -trimpath -ldflags="$ldflags" -o "$output" "$package"
@@ -206,11 +307,25 @@ jobs:
           rm -rf /tmp/psiphon
           retry git clone --depth 1 --single-branch --branch "${PSIPHON_TAG}" https://github.com/Psiphon-Labs/psiphon-tunnel-core.git /tmp/psiphon
           echo "psiphon-commit=$(git -C /tmp/psiphon rev-parse HEAD)" >> /tmp/resolved-commits.txt
-          cd /tmp/psiphon/ConsoleClient
-          retry go mod download
-          build_android_go arm64 "${GITHUB_WORKSPACE}/app/src/main/jniLibs/arm64-v8a/libpsiphon.so" .
-          build_android_go arm "${GITHUB_WORKSPACE}/app/src/main/jniLibs/armeabi-v7a/libpsiphon.so" .
-          build_android_go amd64 "${GITHUB_WORKSPACE}/app/src/main/jniLibs/x86_64/libpsiphon.so" .
+
+          # Detect module root explicitly (Psiphon v2.0.41 has root-level go.mod)
+          if [[ -f /tmp/psiphon/go.mod ]]; then
+            PSIPHON_MOD_ROOT="/tmp/psiphon"
+            PSIPHON_PKG="./ConsoleClient"
+          elif [[ -f /tmp/psiphon/ConsoleClient/go.mod ]]; then
+            PSIPHON_MOD_ROOT="/tmp/psiphon/ConsoleClient"
+            PSIPHON_PKG="."
+          else
+            echo "ERROR: Neither /tmp/psiphon/go.mod nor /tmp/psiphon/ConsoleClient/go.mod exists for tag ${PSIPHON_TAG}." >&2
+            exit 2
+          fi
+          echo "Detected Psiphon Go module root: ${PSIPHON_MOD_ROOT} (go directive: $(grep -E '^(go|toolchain) ' "${PSIPHON_MOD_ROOT}/go.mod" | tr '\n' ' '))"
+          download_go_mods "${PSIPHON_MOD_ROOT}"
+          cd "${PSIPHON_MOD_ROOT}"
+          echo "Active Go toolchain for Psiphon: $(go version)"
+          build_android_go arm64 "${GITHUB_WORKSPACE}/app/src/main/jniLibs/arm64-v8a/libpsiphon.so" "${PSIPHON_PKG}"
+          build_android_go arm "${GITHUB_WORKSPACE}/app/src/main/jniLibs/armeabi-v7a/libpsiphon.so" "${PSIPHON_PKG}"
+          build_android_go amd64 "${GITHUB_WORKSPACE}/app/src/main/jniLibs/x86_64/libpsiphon.so" "${PSIPHON_PKG}"
 
       - name: Assert ELF Architectures, Verify Mandatory Binaries & Generate SBOM/Provenance
         run: |
