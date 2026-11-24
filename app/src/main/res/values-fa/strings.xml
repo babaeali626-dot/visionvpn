@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ویژن وی‌پی‌ان</string>
+    <string name="nav_home">داشبورد</string>
+    <string name="nav_profiles">پروفایل‌ها</string>
+    <string name="nav_chain">زنجیره اتصال</string>
+    <string name="nav_settings">تنظیمات</string>
+    <string name="status_disconnected">قطع شده</string>
+    <string name="status_connecting">در حال اتصال…</string>
+    <string name="status_connected">متصل و ایمن</string>
+    <string name="status_disconnecting">در حال قطع اتصال…</string>
+    <string name="status_error">خطای اتصال</string>
+    <string name="tap_to_connect">برای اتصال لمس کنید</string>
+    <string name="tap_to_disconnect">برای قطع اتصال لمس کنید</string>
+    <string name="vpn_notification_channel">تونل ویژن وی‌پی‌ان</string>
+    <string name="vpn_notification_connected">متصل از طریق Sing-box</string>
+    <string name="vpn_notification_connecting">در حال برقراری زنجیره رمزنگاری…</string>
+</resources>
