@@ -369,7 +369,7 @@ jobs:
             "bomFormat": "VisionVPN-SBOM",
             "components": [
               {"name": "sing-box", "version": "${SING_BOX_VERSION}", "license": "GPL-3.0-or-later"},
-              {"name": "tor-android", "version": "0.4.9.17", "license": "BSD-3-Clause"},
+              {"name": "tor-android", "version": "0.4.8.16.1", "license": "BSD-3-Clause"},
               {"name": "lyrebird", "version": "${LYREBIRD_VERSION}", "license": "BSD-3-Clause"},
               {"name": "snowflake", "version": "${SNOWFLAKE_VERSION}", "license": "BSD-3-Clause"},
               {"name": "psiphon-tunnel-core", "version": "${PSIPHON_TAG}", "license": "GPL-3.0-or-later"}
