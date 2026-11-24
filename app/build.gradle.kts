@@ -124,7 +124,12 @@ dependencies {
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar", "*.aar"))))
 
     // Embedded Tor Android binary & service library (Guardian Project)
-    implementation("info.guardianproject:tor-android:0.4.9.17")
+    implementation("info.guardianproject:tor-android:0.4.8.16.1") {
+        // VisionVPN launches libtor.so directly via ProcessBuilder and does not consume
+        // tor-android's Kotlin/Java wrapper; exclude transitive kotlin-stdlib to avoid
+        // Kotlin metadata version clashes with Kotlin 2.0.21.
+        exclude(group = "org.jetbrains.kotlin")
+    }
 
     // Core Android & Lifecycle
     implementation("androidx.core:core-ktx:1.15.0")
