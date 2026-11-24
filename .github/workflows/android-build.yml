@@ -278,7 +278,7 @@ jobs:
           export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"
           export NDK_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
           build_android_go() {
-            local goarch="$1" output="$2" package="$3" target=""
+            local goarch="$1" output="$2" package="$3" extra_ldflags="${4:-}" target=""
             case "$goarch" in
               arm64) target="aarch64-linux-android" ;;
               arm)   target="armv7a-linux-androideabi" ;;
@@ -292,6 +292,9 @@ jobs:
               return 2
             fi
             local ldflags="-s -w"
+            if [[ -n "$extra_ldflags" ]]; then
+              ldflags="${extra_ldflags} ${ldflags}"
+            fi
             if [[ "$goarch" == "arm64" || "$goarch" == "amd64" ]]; then
               ldflags="${ldflags} -extldflags '-Wl,-z,max-page-size=16384'"
             fi
@@ -323,9 +326,15 @@ jobs:
           download_go_mods "${PSIPHON_MOD_ROOT}"
           cd "${PSIPHON_MOD_ROOT}"
           echo "Active Go toolchain for Psiphon: $(go version)"
-          build_android_go arm64 "${GITHUB_WORKSPACE}/app/src/main/jniLibs/arm64-v8a/libpsiphon.so" "${PSIPHON_PKG}"
-          build_android_go arm "${GITHUB_WORKSPACE}/app/src/main/jniLibs/armeabi-v7a/libpsiphon.so" "${PSIPHON_PKG}"
-          build_android_go amd64 "${GITHUB_WORKSPACE}/app/src/main/jniLibs/x86_64/libpsiphon.so" "${PSIPHON_PKG}"
+          echo "Resolved anet dependency (if present): $(go list -m github.com/wlynxg/anet 2>/dev/null || echo 'not listed')"
+
+          # Psiphon v2.0.41 pulls in github.com/wlynxg/anet via its pion/webrtc in-proxy stack on Android
+          # (workaround for Android 11+ NETLINK_ROUTE restrictions, golang/go#40569 & #68082).
+          # anet uses //go:linkname net.zoneCache, rejected by default on Go 1.23+ (including go1.26.5);
+          # see github.com/wlynxg/anet#11. Scoped strictly to Psiphon ConsoleClient builds.
+          build_android_go arm64 "${GITHUB_WORKSPACE}/app/src/main/jniLibs/arm64-v8a/libpsiphon.so" "${PSIPHON_PKG}" "-checklinkname=0"
+          build_android_go arm "${GITHUB_WORKSPACE}/app/src/main/jniLibs/armeabi-v7a/libpsiphon.so" "${PSIPHON_PKG}" "-checklinkname=0"
+          build_android_go amd64 "${GITHUB_WORKSPACE}/app/src/main/jniLibs/x86_64/libpsiphon.so" "${PSIPHON_PKG}" "-checklinkname=0"
 
       - name: Assert ELF Architectures, Verify Mandatory Binaries & Generate SBOM/Provenance
         run: |
