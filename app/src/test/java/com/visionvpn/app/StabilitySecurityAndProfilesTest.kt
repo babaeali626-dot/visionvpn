@@ -72,6 +72,10 @@ class StabilitySecurityAndProfilesTest {
     private val validRealityPubKey32Bytes: String =
         Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { (it + 1).toByte() })
 
+    private fun dnsReturning(vararg addresses: InetAddress): Dns = object : Dns {
+        override fun lookup(hostname: String): List<InetAddress> = addresses.toList()
+    }
+
     private fun syntheticProfile(idx: Int, network: String = "tcp"): ProxyProfile = ProxyProfile(
         id = "p-$idx",
         name = "Node-$idx",
@@ -469,15 +473,11 @@ class StabilitySecurityAndProfilesTest {
         val privateAddr = InetAddress.getByAddress(byteArrayOf(10, 0, 0, 1))
 
         // Mixed public + private DNS answer must be rejected conservatively
-        val mixedDns = SafePublicDns(object : Dns {
-            override fun lookup(hostname: String): List<InetAddress> = listOf(publicAddr, privateAddr)
-        })
+        val mixedDns = SafePublicDns(dnsReturning(publicAddr, privateAddr))
         assertTrue(runCatching { mixedDns.lookup("rebind.example.test") }.exceptionOrNull() is UnknownHostException)
 
         // All-public DNS answer passes and returns exact validated list
-        val cleanDns = SafePublicDns(object : Dns {
-            override fun lookup(hostname: String): List<InetAddress> = listOf(publicAddr)
-        })
+        val cleanDns = SafePublicDns(dnsReturning(publicAddr))
         assertEquals(listOf(publicAddr), cleanDns.lookup("clean.example.test"))
     }
 
