@@ -15,6 +15,7 @@ env:
   LYREBIRD_VERSION: "lyrebird-0.5.0"
   SNOWFLAKE_VERSION: "v2.10.1"
   PSIPHON_TAG: "v2.0.41"
+  TOR_ANDROID_VERSION: "0.4.9.17"
   ANDROID_NDK_VERSION: "28.0.13004108"
   GOPROXY: "https://proxy.golang.org|direct"
 
@@ -358,6 +359,7 @@ jobs:
             echo "lyrebird=${LYREBIRD_VERSION}"
             echo "snowflake=${SNOWFLAKE_VERSION}"
             echo "psiphon=${PSIPHON_TAG}"
+            echo "tor-android=${TOR_ANDROID_VERSION}"
             echo "ndk=${ANDROID_NDK_VERSION}"
             if [ -f /tmp/resolved-commits.txt ]; then
               cat /tmp/resolved-commits.txt
@@ -369,7 +371,7 @@ jobs:
             "bomFormat": "VisionVPN-SBOM",
             "components": [
               {"name": "sing-box", "version": "${SING_BOX_VERSION}", "license": "GPL-3.0-or-later"},
-              {"name": "tor-android", "version": "0.4.8.16.1", "license": "BSD-3-Clause"},
+              {"name": "tor-android", "version": "${TOR_ANDROID_VERSION}", "license": "BSD-3-Clause"},
               {"name": "lyrebird", "version": "${LYREBIRD_VERSION}", "license": "BSD-3-Clause"},
               {"name": "snowflake", "version": "${SNOWFLAKE_VERSION}", "license": "BSD-3-Clause"},
               {"name": "psiphon-tunnel-core", "version": "${PSIPHON_TAG}", "license": "GPL-3.0-or-later"}
@@ -447,6 +449,7 @@ jobs:
           retention-days: 7
 
       - name: Upload Debug, SBOM, 16 KB Report & Provenance Artifacts
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: VisionVPN-Debug-APK
@@ -470,7 +473,7 @@ jobs:
           retention-days: 30
 
       - name: Upload Unsigned Release APK (Explicitly Labeled Test-Only)
-        if: ${{ env.HAS_RELEASE_KEYSTORE != 'true' }}
+        if: ${{ always() && env.HAS_RELEASE_KEYSTORE != 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: VisionVPN-Release-UNSIGNED-TEST-ONLY
