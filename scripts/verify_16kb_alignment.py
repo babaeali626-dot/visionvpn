@@ -51,29 +51,36 @@ def validate_segments(segments: list[Segment], label: str, abi: str = "arm64-v8a
             errors.append(f"{label}: PT_LOAD #{n} p_align=0x{seg.align:x}; requires at least 0x{PAGE_SIZE:x} (16 KiB) for {abi}")
         if seg.align > 1 and seg.offset % seg.align != seg.vaddr % seg.align:
             errors.append(f"{label}: PT_LOAD #{n} violates p_offset/p_vaddr congruence for p_align=0x{seg.align:x}")
-    # Android's RELRO rule: an unaligned RELRO end is safe when no writable
-    # bytes follow it in any PT_LOAD that fully contains the RELRO range.
-    # Do not require the containing LOAD itself to carry PF_W: a read-only
-    # LOAD (or one with only read-only trailing bytes) cannot be corrupted by
-    # the linker's RELRO page protection.
+    # Android's linker rounds the end of GNU_RELRO up to the next 16 KiB
+    # boundary before applying read-only protection. Reject only when a
+    # writable PT_LOAD actually overlaps the tail of that final protected
+    # page. Do not require GNU_RELRO to fit wholly inside one PT_LOAD:
+    # valid ELF files can have a RELRO end slightly beyond a LOAD's MemSiz,
+    # while the next writable LOAD starts after the rounded page boundary.
+    # See https://developer.android.com/guide/practices/page-sizes#relro
     for n, relro in enumerate(relros, 1):
         end = relro.vaddr + relro.memsz
-        if end % PAGE_SIZE == 0:
+        page_end = ((end + PAGE_SIZE - 1) // PAGE_SIZE) * PAGE_SIZE
+        if page_end == end:
             continue
-        containing = [p for p in loads
-                      if p.vaddr <= relro.vaddr and end <= p.vaddr + p.memsz]
-        if not containing:
-            errors.append(
-                f"{label}: GNU_RELRO #{n} end=0x{end:x} is not 16 KiB safe: "
-                "no PT_LOAD contains the complete GNU_RELRO range"
-            )
-            continue
-        writable_tails = [p for p in containing
-                          if "W" in p.flags and end < p.vaddr + p.memsz]
+        writable_tails = [
+            p for p in loads
+            if "W" in p.flags and p.vaddr < page_end
+            and p.vaddr + p.memsz > end
+        ]
         if writable_tails:
+            overlaps = []
+            for p in writable_tails:
+                overlap_start = max(end, p.vaddr)
+                overlap_end = min(page_end, p.vaddr + p.memsz)
+                overlaps.append(
+                    f"PT_LOAD [0x{p.vaddr:x},0x{p.vaddr+p.memsz:x}) "
+                    f"overlap [0x{overlap_start:x},0x{overlap_end:x})"
+                )
             errors.append(
                 f"{label}: GNU_RELRO #{n} end=0x{end:x} is not 16 KiB safe: "
-                "writable data follows GNU_RELRO in its containing PT_LOAD"
+                "writable data overlaps the final 16 KiB RELRO page; "
+                + "; ".join(overlaps)
             )
     return errors
 
@@ -142,7 +149,12 @@ def check_apk(apk: Path, readelf: str, zipalign: str, tmp: Path):
                      "align": f"0x{s.align:x}"}
                     for s in loads
                 ],
-                "gnu_relro_end_addresses": [f"0x{s.vaddr+s.memsz:x}" for s in relros],
+                "gnu_relro_segments": [
+                    {"vaddr": f"0x{s.vaddr:x}", "memsz": f"0x{s.memsz:x}",
+                     "end": f"0x{s.vaddr+s.memsz:x}",
+                     "rounded_protection_end": f"0x{((s.vaddr+s.memsz+PAGE_SIZE-1)//PAGE_SIZE)*PAGE_SIZE:x}"}
+                    for s in relros
+                ],
                 "ok": not lib_errors, "errors": lib_errors})
     return report, abis, errors
 

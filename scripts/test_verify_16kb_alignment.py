@@ -54,11 +54,26 @@ class AlignmentTests(unittest.TestCase):
         s=[Segment("LOAD",0x4000,0x4000,0x1000,0x4000,0x4000,"R"),
            Segment("GNU_RELRO",0x4000,0x4000,0x1000,0x1000,1,"R")]
         self.assertEqual(validate_segments(s,"readonly-tail.so","arm64-v8a"),[])
-    def test_rejects_relro_not_contained_by_any_load(self):
-        s=[Segment("LOAD",0,0,0x4000,0x4000,0x4000,"RW"),
-           Segment("GNU_RELRO",0x3000,0x3000,0x1000,0x3000,1,"R")]
-        self.assertTrue(any("no PT_LOAD contains" in e
-                            for e in validate_segments(s,"orphan-relro.so","arm64-v8a")))
+    def test_accepts_relro_extending_past_load_when_next_writable_load_is_after_page(self):
+        # Matches the observed AndroidX layout: RELRO ends at 0x6000, the
+        # preceding writable LOAD ends at 0x5fd0, and the next writable LOAD
+        # begins at 0x9fd0 (after the rounded protection end 0x8000).
+        s=[Segment("LOAD",0,0,0x1c40,0x1c40,0x4000,"RE"),
+           Segment("LOAD",0x5c40,0x5c40,0x390,0x390,0x4000,"RW"),
+           Segment("LOAD",0x9fd0,0x9fd0,0x10,0x10,0x4000,"RW"),
+           Segment("GNU_RELRO",0x5c40,0x5c40,0x3c0,0x3c0,1,"R")]
+        self.assertEqual(validate_segments(s,"androidx-layout.so","arm64-v8a"),[])
+    def test_rejects_writable_load_inside_rounded_relro_tail_page(self):
+        s=[Segment("LOAD",0x5c40,0x5c40,0x390,0x390,0x4000,"RW"),
+           Segment("LOAD",0x7000,0x7000,0x100,0x100,0x4000,"RW"),
+           Segment("GNU_RELRO",0x5c40,0x5c40,0x3c0,0x3c0,1,"R")]
+        self.assertTrue(any("overlaps the final 16 KiB RELRO page" in e
+                            for e in validate_segments(s,"bad-tail.so","arm64-v8a")))
+    def test_accepts_writable_load_starting_at_next_page_boundary(self):
+        s=[Segment("LOAD",0x5c40,0x5c40,0x390,0x390,0x4000,"RW"),
+           Segment("LOAD",0x8000,0x8000,0x100,0x100,0x4000,"RW"),
+           Segment("GNU_RELRO",0x5c40,0x5c40,0x3c0,0x3c0,1,"R")]
+        self.assertEqual(validate_segments(s,"next-page.so","arm64-v8a"),[])
     def test_relro_optional(self):
         s=[Segment("LOAD",0,0,0x4000,0x4000,0x4000,"RE")]
         self.assertEqual(validate_segments(s,"no-relro.so","arm64-v8a"),[])
