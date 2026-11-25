@@ -51,19 +51,30 @@ def validate_segments(segments: list[Segment], label: str, abi: str = "arm64-v8a
             errors.append(f"{label}: PT_LOAD #{n} p_align=0x{seg.align:x}; requires at least 0x{PAGE_SIZE:x} (16 KiB) for {abi}")
         if seg.align > 1 and seg.offset % seg.align != seg.vaddr % seg.align:
             errors.append(f"{label}: PT_LOAD #{n} violates p_offset/p_vaddr congruence for p_align=0x{seg.align:x}")
-    # Android's RELRO acceptance rule: no GNU_RELRO, or RELRO end is 16 KiB
-    # aligned, or it consumes the remainder of its containing writable LOAD.
+    # Android's RELRO rule: an unaligned RELRO end is safe when no writable
+    # bytes follow it in any PT_LOAD that fully contains the RELRO range.
+    # Do not require the containing LOAD itself to carry PF_W: a read-only
+    # LOAD (or one with only read-only trailing bytes) cannot be corrupted by
+    # the linker's RELRO page protection.
     for n, relro in enumerate(relros, 1):
         end = relro.vaddr + relro.memsz
         if end % PAGE_SIZE == 0:
             continue
-        writable = [p for p in loads if "W" in p.flags and
-                    p.vaddr <= relro.vaddr and end <= p.vaddr + p.memsz]
-        if any(end == p.vaddr + p.memsz for p in writable):
+        containing = [p for p in loads
+                      if p.vaddr <= relro.vaddr and end <= p.vaddr + p.memsz]
+        if not containing:
+            errors.append(
+                f"{label}: GNU_RELRO #{n} end=0x{end:x} is not 16 KiB safe: "
+                "no PT_LOAD contains the complete GNU_RELRO range"
+            )
             continue
-        reason = ("no containing writable PT_LOAD was found" if not writable
-                  else "writable data follows GNU_RELRO in its containing PT_LOAD")
-        errors.append(f"{label}: GNU_RELRO #{n} end=0x{end:x} is not 16 KiB safe: {reason}")
+        writable_tails = [p for p in containing
+                          if "W" in p.flags and end < p.vaddr + p.memsz]
+        if writable_tails:
+            errors.append(
+                f"{label}: GNU_RELRO #{n} end=0x{end:x} is not 16 KiB safe: "
+                "writable data follows GNU_RELRO in its containing PT_LOAD"
+            )
     return errors
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -125,6 +136,12 @@ def check_apk(apk: Path, readelf: str, zipalign: str, tmp: Path):
                 "path": entry.filename, "abi": abi,
                 "page_size_check_required": abi in PAGE_SIZE_ABIS,
                 "pt_load_alignments": [f"0x{s.align:x}" for s in loads],
+                "pt_load_segments": [
+                    {"vaddr": f"0x{s.vaddr:x}", "memsz": f"0x{s.memsz:x}",
+                     "end": f"0x{s.vaddr+s.memsz:x}", "flags": s.flags,
+                     "align": f"0x{s.align:x}"}
+                    for s in loads
+                ],
                 "gnu_relro_end_addresses": [f"0x{s.vaddr+s.memsz:x}" for s in relros],
                 "ok": not lib_errors, "errors": lib_errors})
     return report, abis, errors

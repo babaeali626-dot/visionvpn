@@ -50,6 +50,15 @@ class AlignmentTests(unittest.TestCase):
            Segment("LOAD",0x4000,0x4000,0x2000,0x8000,0x4000,"RW"),
            Segment("GNU_RELRO",0x4000,0x4000,0x1000,0x1000,1,"R")]
         self.assertTrue(any("not 16 KiB safe" in e for e in validate_segments(s,"bad-relro.so","arm64-v8a")))
+    def test_accepts_relro_when_only_readonly_data_follows(self):
+        s=[Segment("LOAD",0x4000,0x4000,0x1000,0x4000,0x4000,"R"),
+           Segment("GNU_RELRO",0x4000,0x4000,0x1000,0x1000,1,"R")]
+        self.assertEqual(validate_segments(s,"readonly-tail.so","arm64-v8a"),[])
+    def test_rejects_relro_not_contained_by_any_load(self):
+        s=[Segment("LOAD",0,0,0x4000,0x4000,0x4000,"RW"),
+           Segment("GNU_RELRO",0x3000,0x3000,0x1000,0x3000,1,"R")]
+        self.assertTrue(any("no PT_LOAD contains" in e
+                            for e in validate_segments(s,"orphan-relro.so","arm64-v8a")))
     def test_relro_optional(self):
         s=[Segment("LOAD",0,0,0x4000,0x4000,0x4000,"RE")]
         self.assertEqual(validate_segments(s,"no-relro.so","arm64-v8a"),[])
