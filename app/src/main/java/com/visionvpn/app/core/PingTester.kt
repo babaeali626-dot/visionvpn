@@ -54,7 +54,7 @@ fun interface ProxyLatencyProbe {
 object PingTester {
 
     const val DEFAULT_TEST_URL = "https://www.gstatic.com/generate_204"
-    const val DEFAULT_TIMEOUT_MS = 8_000
+    const val DEFAULT_TIMEOUT_MS = 5_000
     const val DEFAULT_MAX_CONCURRENCY = 1
     private const val MAX_PORT_BIND_ATTEMPTS = 3
 
@@ -425,7 +425,7 @@ object PingTester {
         return false
     }
 
-    private fun unwrapReflectiveError(e: Exception): Throwable {
+    private fun unwrapReflectiveError(e: Throwable): Throwable {
         return if (e is InvocationTargetException && e.targetException != null) {
             e.targetException
         } else {

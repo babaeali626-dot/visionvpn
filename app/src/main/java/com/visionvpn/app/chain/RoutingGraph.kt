@@ -184,6 +184,13 @@ data class RoutingGraph(
                 "Duplicate hops in chain configuration are not allowed."
             }
 
+            if (ChainExitType.CLOUDFLARE_WARP in hops) {
+                require(chainConfig.warpConfig.isRegistered) {
+                    "WARP is blocked until a complete provider-supplied WireGuard configuration is available. " +
+                        "Automatic enrollment and fallback keys are disabled."
+                }
+            }
+
             val torAsEntry = entryProfile != null &&
                 hops.contains(ChainExitType.TOR) &&
                 chainConfig.torConfig.mode == TorChainMode.TOR_ENTRY_TO_SERVER_EXIT

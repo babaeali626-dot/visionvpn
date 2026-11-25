@@ -106,7 +106,14 @@ class VisionPreferencesRepository(
 
     val appSettingsFlow: Flow<AppSettings> = context.visionDataStore.data.map { prefs ->
         prefs[Keys.APP_SETTINGS]?.let { raw ->
-            runCatching { json.decodeFromString<AppSettings>(raw) }
+            runCatching {
+                json.decodeFromString<AppSettings>(raw).let { decoded ->
+                    decoded.copy(
+                        schemaVersion = AppSettings.CURRENT_SCHEMA_VERSION,
+                        latencyProbeTimeoutSeconds = decoded.latencyProbeTimeoutSeconds.coerceIn(1, 30)
+                    )
+                }
+            }
                 .onFailure { _storageErrorFlow.value = "Corrupted app settings record: ${it.message}" }
                 .getOrDefault(AppSettings())
         } ?: AppSettings()
@@ -286,8 +293,12 @@ class VisionPreferencesRepository(
 
     suspend fun saveAppSettings(settings: AppSettings) {
         awaitMigrationBarrier()
+        val normalized = settings.copy(
+            schemaVersion = AppSettings.CURRENT_SCHEMA_VERSION,
+            latencyProbeTimeoutSeconds = settings.latencyProbeTimeoutSeconds.coerceIn(1, 30)
+        )
         context.visionDataStore.edit { prefs ->
-            prefs[Keys.APP_SETTINGS] = json.encodeToString(settings)
+            prefs[Keys.APP_SETTINGS] = json.encodeToString(normalized)
         }
     }
 

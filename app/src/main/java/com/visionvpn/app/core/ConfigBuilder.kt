@@ -507,6 +507,9 @@ class ConfigBuilder {
         detourTag: String?
     ): JsonObject = buildJsonObject {
         val warp = graph.chainConfig.warpConfig
+        require(warp.isRegistered) {
+            "WARP outbound requires a complete provider-supplied WireGuard configuration."
+        }
         put("type", "wireguard")
         put("tag", tag)
         put("server", warp.endpointHost)

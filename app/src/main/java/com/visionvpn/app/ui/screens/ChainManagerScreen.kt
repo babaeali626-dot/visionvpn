@@ -49,7 +49,7 @@ import com.visionvpn.app.ui.viewmodel.VisionUiState
 fun ChainManagerScreen(
     uiState: VisionUiState,
     onUpdateChain: ((ChainConfig) -> ChainConfig) -> Unit,
-    onRegisterWarp: () -> Unit
+    onShowWarpRequirements: () -> Unit
 ) {
     val isPersian = uiState.isPersian
     val chain = uiState.chainConfig
@@ -249,34 +249,25 @@ fun ChainManagerScreen(
                     text = if (warp.isRegistered) {
                         "Status: Registered • Reserved ${warp.reserved} • ${warp.ipv4Address}"
                     } else {
-                        "Status: Not registered yet (auto-registers on connect)"
+                        "Status: BLOCKED BY EXTERNAL REQUIREMENT — provider-supplied WireGuard configuration required"
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (warp.isRegistered) VisionColors.EmeraldConnected else VisionColors.AmberWarning
                 )
                 Spacer(modifier = Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = "${warp.endpointHost}:${warp.endpointPort}",
-                    onValueChange = { raw ->
-                        val host = raw.substringBefore(":").trim()
-                        val port = raw.substringAfter(":", "2408").toIntOrNull() ?: 2408
-                        onUpdateChain {
-                            it.copy(warpConfig = it.warpConfig.copy(endpointHost = host, endpointPort = port))
-                        }
+                Text(
+                    text = if (isPersian) {
+                        "ثبت خودکار و مقادیر نمونه غیرفعال است. برای اتصال، پیکربندی کامل و مجاز ارائه‌دهنده لازم است."
+                    } else {
+                        "Automatic enrollment and sample fallback values are disabled. A complete, authorized provider configuration is required before WARP can be selected."
                     },
-                    label = { Text(if (isPersian) "آدرس Endpoint" else "WARP Endpoint (host:port)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    style = MaterialTheme.typography.bodySmall,
+                    color = VisionColors.TextSecondary
                 )
                 Spacer(modifier = Modifier.height(10.dp))
                 GradientPrimaryButton(
-                    text = if (uiState.isRegisteringWarp) {
-                        if (isPersian) "در حال ثبت کلید…" else "Registering WARP Keys…"
-                    } else {
-                        if (isPersian) "ثبت / تولید مجدد کلید WARP" else "Register / Rotate WARP Keys"
-                    },
-                    enabled = !uiState.isRegisteringWarp,
-                    onClick = onRegisterWarp,
+                    text = if (isPersian) "نمایش نیازمندی‌های راه‌اندازی" else "WARP setup requirements",
+                    onClick = onShowWarpRequirements,
                     modifier = Modifier.fillMaxWidth()
                 )
             }

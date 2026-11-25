@@ -139,7 +139,7 @@ class LibboxBridge(private val context: Context) {
                 }
                 Log.i(TAG, "Sing-box libbox v$SUPPORTED_SING_BOX_VERSION started")
             } catch (t: Throwable) {
-                val tunWasEstablished = activeTunFd?.let { !it.isClosed } == true
+                val tunWasEstablished = activeTunFd?.let { it.fileDescriptor.valid() } == true
                 if (settings.failClosedMode && tunWasEstablished) {
                     // Libbox.start() can fail after its PlatformInterface.openTun() callback has
                     // already established Android's TUN. Never let the generic start-error path
@@ -170,7 +170,7 @@ class LibboxBridge(private val context: Context) {
 
     /** True while the bridge still owns an open Android VPN descriptor (normal or blocking). */
     fun hasOpenTunInterface(): Boolean = synchronized(lock) {
-        activeTunFd?.let { !it.isClosed } == true
+        activeTunFd?.let { it.fileDescriptor.valid() } == true
     }
 
     /**
@@ -312,7 +312,7 @@ class LibboxBridge(private val context: Context) {
 
     /** Native Libbox may close the raw fd it received from openTun(); accept EBADF as already closed. */
     private fun closeTunDescriptor(pfd: ParcelFileDescriptor) {
-        if (pfd.isClosed) return
+        if (!pfd.fileDescriptor.valid()) return
         try {
             pfd.close()
         } catch (t: Throwable) {

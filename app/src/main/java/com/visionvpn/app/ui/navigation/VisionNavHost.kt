@@ -150,7 +150,7 @@ fun VisionAppScaffold(
                     ChainManagerScreen(
                         uiState = uiState,
                         onUpdateChain = viewModel::updateChainConfig,
-                        onRegisterWarp = viewModel::registerWarpAccount
+                        onShowWarpRequirements = viewModel::showWarpRequirements
                     )
                 }
                 composable(VisionTab.SETTINGS.route) {

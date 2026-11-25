@@ -47,6 +47,13 @@ class LatencyAndConnectionStateTest {
     )
 
     @Test
+    fun `AppSettings defaults to five second probe timeout and legacy JSON decodes the default`() {
+        assertEquals(5, AppSettings().latencyProbeTimeoutSeconds)
+        val legacy = json.decodeFromString<AppSettings>("""{"schemaVersion":3}""")
+        assertEquals(5, legacy.latencyProbeTimeoutSeconds)
+    }
+
+    @Test
     fun `PingTester records classified proxy outcomes and never assigns 0ms as valid latency`() = runTest {
         val pOk = testProfile("ok", "ok.example.test")
         val pTimeout = testProfile("timeout", "timeout.example.test")

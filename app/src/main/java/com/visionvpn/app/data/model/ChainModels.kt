@@ -42,19 +42,62 @@ data class SavedTorBridge(
 data class WarpAccountConfig(
     val privateKey: String = "",
     val publicKey: String = "",
-    val peerPublicKey: String = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
-    val endpointHost: String = "engage.cloudflareclient.com",
-    val endpointPort: Int = 2408,
-    val ipv4Address: String = "172.16.0.2/32",
-    val ipv6Address: String = "2606:4700:110:8a36:dfab:af1:636:4e94/128",
-    val reserved: List<Int> = listOf(0, 0, 0),
+    // Provider-supplied values only. Never substitute sample keys, addresses, or endpoints.
+    val peerPublicKey: String = "",
+    val endpointHost: String = "",
+    val endpointPort: Int = 0,
+    val ipv4Address: String = "",
+    val ipv6Address: String = "",
+    val reserved: List<Int> = emptyList(),
     val mtu: Int = 1280,
     val accountId: String = "",
     val accessToken: String = "",
     val registeredAtEpochMs: Long = 0L
 ) {
+    /** True only when the complete WireGuard account/config tuple is present and well-formed. */
     val isRegistered: Boolean
-        get() = privateKey.isNotBlank() && peerPublicKey.isNotBlank()
+        get() = isX25519Key(privateKey) &&
+            isX25519Key(publicKey) &&
+            isX25519Key(peerPublicKey) &&
+            isValidEndpointHost(endpointHost) &&
+            endpointPort in 1..65535 &&
+            isValidIpv4Cidr(ipv4Address) &&
+            (ipv6Address.isBlank() || isValidIpv6Cidr(ipv6Address)) &&
+            reserved.size == 3 && reserved.all { it in 0..255 } &&
+            mtu in 1280..1500 &&
+            accountId.isNotBlank() && accessToken.isNotBlank()
+
+    private fun isX25519Key(value: String): Boolean = runCatching {
+        Base64.getDecoder().decode(value.trim()).size == 32
+    }.getOrDefault(false)
+
+    private fun isValidEndpointHost(value: String): Boolean {
+        val host = value.trim()
+        if (host.isEmpty() || host.length > 253 || host.contains(":") || host.contains("/")) return false
+        return host.split('.').all { label ->
+            label.isNotEmpty() && label.length <= 63 &&
+                label.first().isLetterOrDigit() && label.last().isLetterOrDigit() &&
+                label.all { it.isLetterOrDigit() || it == '-' }
+        }
+    }
+
+    private fun isValidIpv4Cidr(value: String): Boolean {
+        val parts = value.trim().split('/')
+        if (parts.size != 2 || parts[1] != "32") return false
+        val octets = parts[0].split('.')
+        return octets.size == 4 && octets.all { octet ->
+            octet.isNotEmpty() && octet.length <= 3 && octet.all(Char::isDigit) &&
+                octet.toIntOrNull()?.let { it in 0..255 } == true
+        }
+    }
+
+    private fun isValidIpv6Cidr(value: String): Boolean {
+        val parts = value.trim().split('/')
+        if (parts.size != 2 || parts[1] != "128" || !parts[0].contains(':')) return false
+        return runCatching {
+            java.net.InetAddress.getByName(parts[0]).address.size == 16
+        }.getOrDefault(false)
+    }
 }
 
 @Serializable

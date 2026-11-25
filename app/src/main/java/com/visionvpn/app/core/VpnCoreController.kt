@@ -9,7 +9,6 @@ import com.visionvpn.app.chain.ChainManager
 import com.visionvpn.app.chain.LocalEngineManager
 import com.visionvpn.app.chain.LocalEngineState
 import com.visionvpn.app.chain.RoutingGraph
-import com.visionvpn.app.chain.WarpManager
 import com.visionvpn.app.data.local.VisionPreferencesRepository
 import com.visionvpn.app.data.model.AppSettings
 import com.visionvpn.app.data.model.ChainConfig
@@ -73,8 +72,7 @@ class VpnCoreController(
             handleFailClosedEngineFailure(engineId, reason)
         }
     )
-    val warpManager = WarpManager()
-    val chainManager = ChainManager(context, localEngineManager, warpManager)
+    val chainManager = ChainManager(context, localEngineManager)
     val configBuilder = ConfigBuilder()
     private val libboxBridge = LibboxBridge(context)
 
@@ -322,8 +320,7 @@ class VpnCoreController(
                 val graphResult = chainManager.prepareRoutingGraph(
                     entryProfile = entryProfile,
                     rawChainConfig = chainConfig,
-                    allProfiles = profiles,
-                    onWarpConfigUpdated = { updated -> repository.saveChainConfig(updated) }
+                    allProfiles = profiles
                 )
                 if (graphResult.isFailure) {
                     return failAndCleanup(

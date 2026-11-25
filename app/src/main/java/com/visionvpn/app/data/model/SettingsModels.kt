@@ -46,7 +46,7 @@ enum class VisionThemeVariant(val label: String) {
  */
 @Serializable
 data class AppSettings(
-    val schemaVersion: Int = 3,
+    val schemaVersion: Int = CURRENT_SCHEMA_VERSION,
     val splitTunnelMode: SplitTunnelMode = SplitTunnelMode.DISABLED,
     val splitTunnelPackages: Set<String> = emptySet(),
     val bypassLan: Boolean = false,
@@ -59,6 +59,8 @@ data class AppSettings(
     val ipv6Policy: Ipv6Policy = Ipv6Policy.BLOCK_IPV6,
     val strictDnsLeakProtection: Boolean = true,
     val failClosedMode: Boolean = true,
+    /** HTTPS profile-probe timeout only; native engine startup has a separate timeout. */
+    val latencyProbeTimeoutSeconds: Int = 5,
     val mtu: Int = 9000,
     val language: AppLanguage = AppLanguage.ENGLISH,
     val themeVariant: VisionThemeVariant = VisionThemeVariant.VISION_NAVY
@@ -68,6 +70,10 @@ data class AppSettings(
 
     val effectiveThemeVariant: VisionThemeVariant
         get() = VisionThemeVariant.VISION_NAVY
+
+    companion object {
+        const val CURRENT_SCHEMA_VERSION = 4
+    }
 }
 
 data class InstalledAppInfo(

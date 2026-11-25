@@ -1,3 +1,15 @@
+# VisionVPN — Engineering Delivery Report (Revision 8 Offline Source Hardening)
+
+> **Revision 8 delivery note:** this report extends the Revision 7 source snapshot. The edits in this offline pass are recorded in [`docs/revision8/IMPLEMENTATION_REPORT.md`](docs/revision8/IMPLEMENTATION_REPORT.md). The WARP false-ready/default-fallback issue was hardened, and a bounded profile-probe timeout setting was added. These changes are `IMPLEMENTED BUT NOT TESTED` until the Android project build and regression suite are run with the missing build inputs. No branch/CI/device claim is made.
+
+- WARP is no longer automatically enrolled through the previously hard-coded undocumented consumer registration endpoint or spoofed client headers. It is considered available only when the complete provider-supplied WireGuard/account configuration passes structural validation.
+- WARP graph/config construction now fails closed when that configuration is incomplete; UI status no longer claims that keys will be registered automatically.
+- Profile HTTPS probe timeout is configurable from 1–30 seconds (default 5 seconds). The effective native Libbox probe concurrency remains **1**, not the 20 shown in the reference screenshot.
+- Smart Connect, separate Hiddify chain roles, live WARP/Psiphon connectivity, device routing/leak tests, and Android build/CI validation are not complete. No network-filter bypass layer was added.
+- This delivery is a source ZIP only. The input archive contains no `.git` metadata; remote branches and their SHAs were not queried or changed.
+
+---
+
 # VisionVPN — Engineering Delivery Report (Revision 7 Final Source Remediation)
 
 This report strictly uses the five required status labels:

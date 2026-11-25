@@ -72,6 +72,10 @@ class StabilitySecurityAndProfilesTest {
     private val validRealityPubKey32Bytes: String =
         Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { (it + 1).toByte() })
 
+    private fun dnsReturning(vararg addresses: InetAddress): Dns = object : Dns {
+        override fun lookup(hostname: String): List<InetAddress> = addresses.toList()
+    }
+
     private fun syntheticProfile(idx: Int, network: String = "tcp"): ProxyProfile = ProxyProfile(
         id = "p-$idx",
         name = "Node-$idx",
@@ -354,7 +358,7 @@ class StabilitySecurityAndProfilesTest {
         assertFalse(builder.isValidRealityPublicKey(""))
         assertFalse(builder.isValidRealityPublicKey("has spaces in key"))
         assertFalse("RawURLEncoding rejects Base64 padding", builder.isValidRealityPublicKey(Base64.getUrlEncoder().encodeToString(ByteArray(32) { (it + 1).toByte() })))
-        assertFalse("Standard Base64 alphabet is not Base64URL", builder.isValidRealityPublicKey(Base64.getEncoder().withoutPadding().encodeToString(ByteArray(32) { (it + 1).toByte() })))
+        assertFalse("Standard Base64 alphabet is not Base64URL", builder.isValidRealityPublicKey(Base64.getEncoder().withoutPadding().encodeToString(ByteArray(32) { 0xFF.toByte() })))
         assertFalse("Whitespace around a key must not be normalized", builder.isValidRealityPublicKey(" $validRealityPubKey32Bytes"))
         assertTrue(builder.isValidRealityPublicKey(validRealityPubKey32Bytes))
 
@@ -469,11 +473,11 @@ class StabilitySecurityAndProfilesTest {
         val privateAddr = InetAddress.getByAddress(byteArrayOf(10, 0, 0, 1))
 
         // Mixed public + private DNS answer must be rejected conservatively
-        val mixedDns = SafePublicDns(Dns { listOf(publicAddr, privateAddr) })
+        val mixedDns = SafePublicDns(dnsReturning(publicAddr, privateAddr))
         assertTrue(runCatching { mixedDns.lookup("rebind.example.test") }.exceptionOrNull() is UnknownHostException)
 
         // All-public DNS answer passes and returns exact validated list
-        val cleanDns = SafePublicDns(Dns { listOf(publicAddr) })
+        val cleanDns = SafePublicDns(dnsReturning(publicAddr))
         assertEquals(listOf(publicAddr), cleanDns.lookup("clean.example.test"))
     }
 
@@ -574,6 +578,9 @@ class StabilitySecurityAndProfilesTest {
         val psiphon = builtIns.first { it.engineType == LocalEngineProfileType.PSIPHON }
         assertFalse(psiphon.isReady)
         assertTrue(psiphon.statusNote.contains("Needs official Psiphon provisioning"))
+        val warp = builtIns.first { it.engineType == LocalEngineProfileType.WARP }
+        assertFalse(warp.isReady)
+        assertTrue(warp.statusNote.contains("provider-supplied"))
 
         val sub = SubscriptionSource(id = "sub-1", name = "My Sub", url = "https://sub.example.test/list")
         val remote = syntheticProfile(1)
@@ -593,7 +600,18 @@ class StabilitySecurityAndProfilesTest {
             enabled = true,
             useEntryProxy = true,
             primaryExitType = ChainExitType.CLOUDFLARE_WARP,
-            warpConfig = WarpAccountConfig(privateKey = "privKey==", peerPublicKey = "peerKey==")
+            warpConfig = WarpAccountConfig(
+                privateKey = java.util.Base64.getEncoder().encodeToString(ByteArray(32) { 1 }),
+                publicKey = java.util.Base64.getEncoder().encodeToString(ByteArray(32) { 2 }),
+                peerPublicKey = java.util.Base64.getEncoder().encodeToString(ByteArray(32) { 3 }),
+                endpointHost = "warp.example.test",
+                endpointPort = 2408,
+                ipv4Address = "172.16.0.2/32",
+                reserved = listOf(1, 2, 3),
+                accountId = "test-account-id",
+                accessToken = "test-provider-token",
+                registeredAtEpochMs = 1L
+            )
         )
         assertTrue(RoutingGraph.build(wsVless, warpCfg, listOf(wsVless)).isFailure)
         val probeCollision = ChainConfig(

@@ -61,11 +61,35 @@ class RoutingGraphAndConfigBuilderTest {
         password = "pass"
     )
 
-    private val readyWarp = WarpAccountConfig(
-        privateKey = "privKeyBase64==",
-        peerPublicKey = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
-        reserved = listOf(12, 34, 56)
+    private fun keyBytes(seed: Int): String = java.util.Base64.getEncoder().encodeToString(
+        ByteArray(32) { idx -> (seed + idx).toByte() }
     )
+
+    private val readyWarp = WarpAccountConfig(
+        privateKey = keyBytes(1),
+        publicKey = keyBytes(33),
+        peerPublicKey = keyBytes(65),
+        endpointHost = "warp.example.test",
+        endpointPort = 2408,
+        ipv4Address = "172.16.0.2/32",
+        reserved = listOf(12, 34, 56),
+        accountId = "test-account-id",
+        accessToken = "test-provider-token",
+        registeredAtEpochMs = 1L
+    )
+
+    @Test
+    fun `WARP is not ready without a complete provider configuration`() {
+        assertFalse(WarpAccountConfig().isRegistered)
+        val result = RoutingGraph.build(
+            entryProfile = null,
+            chainConfig = ChainConfig(useEntryProxy = false).withExitProvider(ChainExitType.CLOUDFLARE_WARP),
+            allProfiles = emptyList()
+        )
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()?.message.orEmpty().contains("provider-supplied"))
+        assertTrue(readyWarp.isRegistered)
+    }
 
     @Test
     fun `Standalone Tor never injects saved profiles when useEntryProxy is false`() {

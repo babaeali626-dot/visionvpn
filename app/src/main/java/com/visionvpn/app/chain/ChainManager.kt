@@ -2,46 +2,30 @@ package com.visionvpn.app.chain
 
 import android.content.Context
 import com.visionvpn.app.data.model.ChainConfig
-import com.visionvpn.app.data.model.ChainExitType
 import com.visionvpn.app.data.model.ProxyProfile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
 /**
- * Validates multi-hop routing graphs, ensures Cloudflare WARP registration when needed,
- * and starts/stops local daemon engines (Tor, Psiphon) in strict dependency order while
- * preserving coroutine [CancellationException].
+ * Validates the configured routing graph and starts/stops local daemon engines (Tor, Psiphon)
+ * in strict dependency order while preserving coroutine [CancellationException]. WARP is never
+ * silently enrolled here; graph validation requires a complete provider-supplied configuration.
  */
 class ChainManager(
     private val context: Context,
-    private val localEngineManager: LocalEngineManager,
-    private val warpManager: WarpManager
+    private val localEngineManager: LocalEngineManager
 ) {
     suspend fun prepareRoutingGraph(
         entryProfile: ProxyProfile?,
         rawChainConfig: ChainConfig,
-        allProfiles: List<ProxyProfile>,
-        onWarpConfigUpdated: suspend (ChainConfig) -> Unit
+        allProfiles: List<ProxyProfile>
     ): Result<RoutingGraph> {
         return try {
-            var effectiveConfig = rawChainConfig
-            val hops = effectiveConfig.orderedExitHops()
-
-            // Auto-register Cloudflare WARP keys if WARP is in the chain and unregistered
-            if (hops.contains(ChainExitType.CLOUDFLARE_WARP) && !effectiveConfig.warpConfig.isRegistered) {
-                val warpReg = warpManager.registerNewAccount(
-                    existingEndpointHost = effectiveConfig.warpConfig.endpointHost,
-                    existingEndpointPort = effectiveConfig.warpConfig.endpointPort
-                ).getOrThrow()
-                effectiveConfig = effectiveConfig.copy(warpConfig = warpReg)
-                onWarpConfigUpdated(effectiveConfig)
-            }
-
             Result.success(
                 RoutingGraph.build(
                     entryProfile = entryProfile,
-                    chainConfig = effectiveConfig,
+                    chainConfig = rawChainConfig,
                     allProfiles = allProfiles
                 ).getOrThrow()
             )

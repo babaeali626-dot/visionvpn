@@ -609,8 +609,8 @@ private fun BuiltInEnginesCard(
                 if (isPersian) "کلیدهای WireGuard WARP ثبت شده است"
                 else "WireGuard WARP credentials registered (${warpConfig.endpointHost}:${warpConfig.endpointPort})"
             } else {
-                if (isPersian) "ثبت خودکار کلیدهای WARP هنگام اتصال"
-                else "WARP WireGuard keys will register on connect"
+                if (isPersian) "نیازمند پیکربندی معتبر ارائه‌دهنده"
+                else "Requires a complete provider-supplied WireGuard configuration"
             }
             Text(text = warpNote, style = MaterialTheme.typography.bodyMedium, color = VisionColors.CyanHighlight)
         }

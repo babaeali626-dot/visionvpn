@@ -93,9 +93,9 @@ object BuiltInProfilesCatalog {
 
         val warp = chainConfig.warpConfig
         val warpStatus = if (warp.isRegistered) {
-            "WireGuard registered (${warp.endpointHost}:${warp.endpointPort})"
+            "Validated provider-supplied WireGuard configuration"
         } else {
-            "Auto-registers WireGuard keys on connect"
+            "Blocked: complete provider-supplied WireGuard configuration required"
         }
 
         return listOf(
@@ -117,7 +117,7 @@ object BuiltInProfilesCatalog {
                 engineType = LocalEngineProfileType.WARP,
                 displayName = "Cloudflare WARP",
                 subtitle = "Built-in WireGuard Engine",
-                isReady = true,
+                isReady = warp.isRegistered,
                 statusNote = warpStatus
             )
         )

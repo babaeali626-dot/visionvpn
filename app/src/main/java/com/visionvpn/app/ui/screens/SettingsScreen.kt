@@ -37,6 +37,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -69,6 +70,7 @@ import com.visionvpn.app.ui.components.GradientPrimaryButton
 import com.visionvpn.app.ui.components.SectionHeader
 import com.visionvpn.app.ui.theme.VisionColors
 import com.visionvpn.app.ui.viewmodel.VisionUiState
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -111,6 +113,58 @@ fun SettingsScreen(
             title = if (isPersian) "تنظیمات" else "Settings",
             subtitle = if (isPersian) "خروجی VPN، سایفون، پل‌های تور، امنیت و مسیریابی" else "VPN exit provider, Psiphon region, Tor bridges, security & routing"
         )
+
+        // Diagnostics & profile-test timeout (independent of native engine startup timeout).
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            var probeTimeoutDraft by remember(settings.latencyProbeTimeoutSeconds) {
+                mutableStateOf(settings.latencyProbeTimeoutSeconds.coerceIn(1, 30))
+            }
+            val probeTimeout = probeTimeoutDraft
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (isPersian) "آزمایش و عیب‌یابی" else "Diagnostics & Testing",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = if (isPersian) "$probeTimeout ثانیه" else "$probeTimeout seconds",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = VisionColors.CyanHighlight
+                )
+            }
+            Text(
+                text = if (isPersian) {
+                    "مهلت هر درخواست HTTPS برای آزمون پروفایل؛ این مقدار مستقل از مهلت راه‌اندازی موتور است."
+                } else {
+                    "Per-request HTTPS timeout for profile tests. This is separate from the native engine startup timeout."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = VisionColors.TextSecondary
+            )
+            Slider(
+                value = probeTimeout.toFloat(),
+                onValueChange = { value ->
+                    probeTimeoutDraft = value.roundToInt().coerceIn(1, 30)
+                },
+                onValueChangeFinished = {
+                    onUpdateSettings { it.copy(latencyProbeTimeoutSeconds = probeTimeoutDraft) }
+                },
+                valueRange = 1f..30f,
+                steps = 28
+            )
+            Text(
+                text = if (isPersian) {
+                    "آزمون‌های بومی Libbox در این نسخه برای ایمنی چرخه‌عمر، یکی‌یکی اجرا می‌شوند (هم‌زمانی مؤثر: ۱)."
+                } else {
+                    "Native Libbox profile probes remain serialized for process-lifecycle safety (effective concurrency: 1)."
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = VisionColors.TextSecondary
+            )
+        }
 
         // A. VPN Routing & Exit Provider (Synced with Chain Manager)
         GlassCard(
@@ -480,8 +534,7 @@ fun SettingsScreen(
         var serverEntries by remember { mutableStateOf(chain.psiphonConfig.embeddedServerEntries) }
         var remotePubKey by remember { mutableStateOf(chain.psiphonConfig.remoteServerListSignaturePublicKey) }
         var remoteUrls by remember {
-            mutableStateOf(chain.psiphonConfig.remoteServerListUrls.joinToString("
-") { it.url })
+            mutableStateOf(chain.psiphonConfig.remoteServerListUrls.joinToString("\n") { it.url })
         }
 
         AlertDialog(

@@ -9,6 +9,7 @@ import com.visionvpn.app.chain.LocalEngineState
 import com.visionvpn.app.chain.PluggableTransportAvailability
 import com.visionvpn.app.chain.RoutingGraph
 import com.visionvpn.app.chain.TorBridgeValidator
+import com.visionvpn.app.chain.WarpManager
 import com.visionvpn.app.core.ExitIpInfo
 import com.visionvpn.app.core.LibboxRuntime
 import com.visionvpn.app.core.PingTester
@@ -80,7 +81,6 @@ data class VisionUiState(
     val latencyProgress: Pair<Int, Int>? = null,
     val isFetchingSubscription: Boolean = false,
     val refreshingSubscriptionIds: Set<String> = emptySet(),
-    val isRegisteringWarp: Boolean = false,
     val snackbarMessage: String? = null
 ) {
     /**
@@ -141,7 +141,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private val _latencyProgress = MutableStateFlow<Pair<Int, Int>?>(null)
     private val _isFetchingSub = MutableStateFlow(false)
     private val _refreshingSubIds = MutableStateFlow<Set<String>>(emptySet())
-    private val _isRegisteringWarp = MutableStateFlow(false)
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     private val _installedApps = MutableStateFlow<List<InstalledAppInfo>>(emptyList())
     val installedApps: StateFlow<List<InstalledAppInfo>> = _installedApps.asStateFlow()
@@ -201,7 +200,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             ActivitySlice(engines, testing, testingSubId, progress, fetching)
         },
         combine(
-            combine(_refreshingSubIds, _isRegisteringWarp, _snackbarMessage) { r, w, s -> Triple(r, w, s) },
+            combine(_refreshingSubIds, _snackbarMessage) { refreshing, snackbar -> refreshing to snackbar },
             repository.storageErrorFlow,
             controller.exitIpInfo,
             combine(
@@ -209,8 +208,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 controller.osAlwaysOnEnabled,
                 controller.osLockdownEnabled
             ) { bh, ao, ld -> Triple(bh, ao, ld) }
-        ) { (refreshingIds, warpBusy, snackbar), storageErr, exitIp, (blackhole, alwaysOn, lockdown) ->
-            ExtraSlice(refreshingIds, warpBusy, snackbar, storageErr, exitIp, blackhole, alwaysOn, lockdown)
+        ) { (refreshingIds, snackbar), storageErr, exitIp, (blackhole, alwaysOn, lockdown) ->
+            ExtraSlice(refreshingIds, snackbar, storageErr, exitIp, blackhole, alwaysOn, lockdown)
         }
     ) { persisted, core, activity, extra ->
         val groups = SubscriptionProfileManager.groupProfiles(persisted.profiles, persisted.subs)
@@ -260,7 +259,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             latencyProgress = activity.latencyProgress,
             isFetchingSubscription = activity.fetching,
             refreshingSubscriptionIds = extra.refreshingIds,
-            isRegisteringWarp = extra.warpBusy,
             snackbarMessage = extra.snackbar
         )
     }.stateIn(
@@ -295,7 +293,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
     private data class ExtraSlice(
         val refreshingIds: Set<String>,
-        val warpBusy: Boolean,
         val snackbar: String?,
         val storageErr: String?,
         val exitIp: ExitIpInfo,
@@ -382,6 +379,10 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
      */
     fun selectBuiltInProfile(engineType: LocalEngineProfileType) {
         viewModelScope.launch {
+            if (engineType == LocalEngineProfileType.WARP && !uiState.value.chainConfig.warpConfig.isRegistered) {
+                postMessage(WarpManager.PROVISIONING_BLOCKED_MESSAGE)
+                return@launch
+            }
             val updatedChain = uiState.value.chainConfig.copy(
                 enabled = true,
                 useEntryProxy = false,
@@ -817,9 +818,13 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             _testingSubscriptionId.value = scopeSubscriptionId
             _latencyProgress.value = 0 to targets.size
             try {
+                val probeTimeoutMs = uiState.value.settings.latencyProbeTimeoutSeconds
+                    .coerceIn(1, 30) * 1_000
                 val measurements = PingTester.testProfiles(
                     profiles = targets,
                     probe = proxyLatencyProbe,
+                    timeoutMs = probeTimeoutMs,
+                    maxConcurrency = PingTester.DEFAULT_MAX_CONCURRENCY,
                     onProgress = { completed, total ->
                         if (latencyRequestCounter.get() == requestId) {
                             _latencyProgress.value = completed to total
@@ -866,23 +871,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun registerWarpAccount() {
-        if (_isRegisteringWarp.value) return
-        viewModelScope.launch {
-            _isRegisteringWarp.value = true
-            val currentWarp = uiState.value.chainConfig.warpConfig
-            val result = controller.warpManager.registerNewAccount(
-                existingEndpointHost = currentWarp.endpointHost,
-                existingEndpointPort = currentWarp.endpointPort
-            )
-            _isRegisteringWarp.value = false
-            result.onSuccess { newWarp ->
-                updateChainConfig { it.copy(warpConfig = newWarp) }
-                postMessage("Cloudflare WARP keys registered successfully")
-            }.onFailure { err ->
-                postMessage(err.message ?: "WARP registration failed")
-            }
-        }
+    fun showWarpRequirements() {
+        // No undocumented Cloudflare registration endpoint or client-identity spoofing.
+        postMessage(WarpManager.PROVISIONING_BLOCKED_MESSAGE)
     }
 
     fun updateSettings(transform: (AppSettings) -> AppSettings) {
