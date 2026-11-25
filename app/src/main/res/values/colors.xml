@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="vision_bg_deep">#FF060B26</color>
+    <color name="vision_bg_navy">#FF0B1437</color>
+    <color name="vision_accent_blue">#FF0075FF</color>
+    <color name="vision_accent_purple">#FF582CFF</color>
+    <color name="vision_emerald">#FF01B574</color>
+</resources>
