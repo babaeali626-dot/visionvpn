@@ -425,7 +425,7 @@ object PingTester {
         return false
     }
 
-    private fun unwrapReflectiveError(e: Exception): Throwable {
+    private fun unwrapReflectiveError(e: Throwable): Throwable {
         return if (e is InvocationTargetException && e.targetException != null) {
             e.targetException
         } else {
