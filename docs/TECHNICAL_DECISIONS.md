@@ -19,3 +19,8 @@
 ## TD-05: Android 16 KB Page-Size Release Gate
 - **Decision**: Upgrade CI NDK to `28.0.13004108` (r28) and enforce `readelf -l` (`PT_LOAD` `0x4000`) + `zipalign -c -P 16 -v 4` on the final assembled APK.
 - **Rationale**: Mandatory for API 35+ Android 15 devices and Google Play 16 KB compliance.
+
+
+## TD-06: Consume Guardian Project Tor Android as a Native-Only AAR
+- **Decision**: Resolve `tor-android:0.4.9.17` in a dedicated non-consumable/non-compile configuration, extract only `jni/<abi>/libtor.so` into generated `jniLibs`, and do not add the AAR to Android compile/runtime classpaths.
+- **Rationale**: VisionVPN launches `libtor.so` directly with `ProcessBuilder` and does not use the AAR's Android wrapper classes, resources, or manifest. The published AAR declares `minCompileSdk=37`, while the current application intentionally remains on `compileSdk=35` / AGP 8.7.3. Native-only extraction avoids an unnecessary AGP/Gradle/Kotlin major migration without suppressing AAR metadata checks for actual Android dependencies. The extracted library remains subject to strict ABI and 16 KiB ELF/APK verification.

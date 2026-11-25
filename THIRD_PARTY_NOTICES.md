@@ -5,7 +5,7 @@ VisionVPN integrates and depends on the following open-source projects. All upst
 | Component | Upstream Repository | License | Usage in VisionVPN |
 | :--- | :--- | :--- | :--- |
 | **sing-box (`libbox.aar`)** | https://github.com/SagerNet/sing-box | GPL-3.0-or-later | Primary VPN TUN and proxy routing core (v1.10.7) |
-| **Tor Android (`tor-android`)** | https://github.com/guardianproject/tor-android | BSD-3-Clause / Tor License | Embedded Tor daemon (`libtor.so`) |
+| **Tor Android (`tor-android`)** | https://github.com/guardianproject/tor-android | BSD-3-Clause / Tor License | Embedded Tor daemon (`libtor.so`, extracted from the native-only `tor-android:0.4.9.17` AAR) |
 | **Lyrebird** | https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird | BSD-3-Clause | Tor pluggable transports (`obfs4`, `meek_lite`, `webtunnel`) |
 | **Snowflake** | https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake | BSD-3-Clause | Tor Snowflake WebRTC pluggable transport |
 | **Psiphon Tunnel Core** | https://github.com/Psiphon-Labs/psiphon-tunnel-core | GPL-3.0-or-later | Local Psiphon tunnel engine (`libpsiphon.so`) |

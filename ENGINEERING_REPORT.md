@@ -28,7 +28,7 @@ Revision 5 fixes completed in source code (`IMPLEMENTED BUT NOT TESTED` until CI
 ## B. Repository Baseline & Toolchain Versions
 - **Application ID**: `com.visionvpn.app` (`minSdk = 26`, `compileSdk = 35`, `targetSdk = 35`)
 - **Build Toolchain**: Android Gradle Plugin `8.7.3`, Kotlin `2.0.21`, Gradle `8.10.2`, JDK `17`
-- **Pinned Native Targets**: Sing-box `v1.10.7`, Guardian Project `tor-android:0.4.9.17`, Lyrebird `lyrebird-0.5.0`, Snowflake `v2.10.1`, Psiphon Tunnel Core `v2.0.28`, Android NDK r28 (`28.0.13004108`)
+- **Pinned Native Targets**: Sing-box `v1.10.7`, Guardian Project `tor-android:0.4.9.17` (AAR resolved native-only; `libtor.so` extracted into generated `jniLibs` so its API 37 AAR metadata is not added to the API 35 compile classpath), Lyrebird `lyrebird-0.5.0`, Snowflake `v2.10.1`, Psiphon Tunnel Core `v2.0.28`, Android NDK r28 (`28.0.13004108`)
 - **Offline Sandbox Environment**: OpenJDK `17.0.21` + Python 3 only (no Android SDK, no Gradle, no `kotlinc`, no internet).
 
 ---
@@ -83,7 +83,7 @@ Revision 5 fixes completed in source code (`IMPLEMENTED BUT NOT TESTED` until CI
 
 ## H. Tor Bootstrap, Bridge & CONNECT Health Status
 - **Bootstrap, Bridge Validation (obfs4/WebTunnel/Snowflake, strict IPv6 RFC 4291), No-Fallback & CONNECT Probe**: `IMPLEMENTED BUT NOT TESTED` — `TorEngine.isHealthy()` requires process liveness, bootstrap state, `Socks5Probe.verifyHandshake`, and rate-limited `Socks5Probe.verifyConnect`.
-- **Live Tor / Pluggable Transport Runtime**: `BLOCKED BY EXTERNAL REQUIREMENT` — requires CI-built `liblyrebird.so` / `libsnowflake.so`, `tor-android:0.4.9.17`, and a network-connected Android device/emulator.
+- **Live Tor / Pluggable Transport Runtime**: `BLOCKED BY EXTERNAL REQUIREMENT` — requires CI extraction of `libtor.so` from native-only `tor-android:0.4.9.17` AAR, CI-built `liblyrebird.so` / `libsnowflake.so`, and a network-connected Android device/emulator.
 
 ---
 

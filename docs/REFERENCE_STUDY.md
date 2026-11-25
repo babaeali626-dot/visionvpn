@@ -27,7 +27,8 @@ This document records how the four mandatory engineering references directly sha
   - `https://github.com/guardianproject/tor-android` (`0.4.9.17`)
   - `https://support.torproject.org/little-t-tor/circumvention/using-bridges/`
 - **Key Findings Applied**:
-  - Uses `info.guardianproject:tor-android:0.4.9.17` (`libtor.so`) executed as a managed child daemon with dedicated `DataDirectory`, `SocksPort`, `DNSPort`, and `ClientTransportPlugin` directives for `liblyrebird.so` (`obfs4`, `meek_lite`, `webtunnel`) and `libsnowflake.so` (`snowflake`).
+  - Resolves `info.guardianproject:tor-android:0.4.9.17` as a native-only AAR and extracts only `jni/<abi>/libtor.so` into generated `jniLibs`. The AAR is not placed on the Android compile/runtime classpaths because VisionVPN invokes the daemon directly and does not use its Android wrapper; this also avoids propagating that AAR’s `minCompileSdk=37` metadata into the app (which remains `compileSdk=35`).
+  - Executes the extracted `libtor.so` as a managed child daemon with dedicated `DataDirectory`, `SocksPort`, `DNSPort`, and `ClientTransportPlugin` directives for `liblyrebird.so` (`obfs4`, `meek_lite`, `webtunnel`) and `libsnowflake.so` (`snowflake`).
   - Applied in `chain/TorEngine.kt` (generation-guarded bootstrap tracking, immediate `bootstrapped = false` reset on errors, graceful `waitFor(2s)` shutdown, SOCKS5 handshake & CONNECT probe) and `chain/TorBridgeValidator.kt` (semantic RFC 4291 IPv6 literal validation).
 - **License**: **BSD-3-Clause / Tor License** (documented in `THIRD_PARTY_NOTICES.md`).
 
