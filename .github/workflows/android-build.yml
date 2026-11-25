@@ -431,83 +431,10 @@ jobs:
             mv "${UNSIGNED_APK}.aligned" "${UNSIGNED_APK}"
           fi
 
-      - name: Verify 16 KB ELF PT_LOAD and APK ZIP Alignment Across ALL Built APKs and ALL Packaged ABIs
+      - name: Verify 16 KB ELF PT_LOAD, GNU_RELRO, and APK ZIP Alignment Across ALL Built APKs and ALL Packaged ABIs
         run: |
-          python3 - << 'PYEOF'
-          import json
-          import os
-          import re
-          import subprocess
-          import sys
-          import tempfile
-          import zipfile
-          from pathlib import Path
-
-          android_home = os.environ["ANDROID_HOME"]
-          zipalign = Path(android_home) / "build-tools" / "35.0.0" / "zipalign"
-
-          apks = sorted(
-              list(Path("app/build/outputs/apk/debug").glob("*.apk"))
-              + list(Path("app/build/outputs/apk/release").glob("*.apk"))
-          )
-          if not apks:
-              print("ERROR: No built APKs found to inspect.", file=sys.stderr)
-              sys.exit(1)
-
-          report = {"apks": [], "all_passed": True}
-          sixty_four_bit_abis = {"arm64-v8a", "x86_64"}
-
-          for apk in apks:
-              apk_entry = {
-                  "apk": str(apk),
-                  "zipalign_16kb_passed": False,
-                  "native_libraries": [],
-                  "passed": True,
-              }
-              za = subprocess.run([str(zipalign), "-c", "-P", "16", "-v", "4", str(apk)], capture_output=True, text=True)
-              apk_entry["zipalign_16kb_passed"] = (za.returncode == 0)
-              if za.returncode != 0:
-                  apk_entry["passed"] = False
-                  apk_entry["zipalign_error"] = za.stderr[-1000:]
-
-              with tempfile.TemporaryDirectory() as tmpdir:
-                  with zipfile.ZipFile(apk, "r") as zf:
-                      so_members = sorted(m for m in zf.namelist() if m.startswith("lib/") and m.endswith(".so"))
-                      if not so_members:
-                          apk_entry["passed"] = False
-                          apk_entry["error"] = "No native .so files found in APK"
-                      for member in so_members:
-                          parts = member.split("/")
-                          abi = parts[1] if len(parts) >= 3 else "unknown"
-                          extracted = Path(zf.extract(member, tmpdir))
-                          re_out = subprocess.check_output(["readelf", "-l", str(extracted)], text=True)
-                          aligns = []
-                          for line in re_out.splitlines():
-                              if re.match(r"^\s*LOAD\s+", line):
-                                  tok = line.strip().split()[-1]
-                                  aligns.append(int(tok, 16) if tok.startswith("0x") else int(tok))
-                          requires_16kb = abi in sixty_four_bit_abis
-                          lib_ok = bool(aligns) and (all(a >= 16384 for a in aligns) if requires_16kb else True)
-                          apk_entry["native_libraries"].append({
-                              "path": member,
-                              "abi": abi,
-                              "requires_16kb": requires_16kb,
-                              "pt_load_align_bytes": aligns,
-                              "passed": lib_ok,
-                          })
-                          if not lib_ok:
-                              apk_entry["passed"] = False
-
-              if not apk_entry["passed"]:
-                  report["all_passed"] = False
-              report["apks"].append(apk_entry)
-
-          Path("16kb-alignment-report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-          print(json.dumps(report, indent=2))
-          if not report["all_passed"]:
-              print("ERROR: 16 KB alignment gate failed for one or more APKs/libraries.", file=sys.stderr)
-              sys.exit(1)
-          PYEOF
+          set -euo pipefail
+          python3 scripts/verify_16kb_alignment.py
 
       - name: Upload Debug, SBOM, 16 KB Report & Provenance Artifacts
         uses: actions/upload-artifact@v7
