@@ -434,7 +434,17 @@ jobs:
       - name: Verify 16 KB ELF PT_LOAD, GNU_RELRO, and APK ZIP Alignment Across ALL Built APKs and ALL Packaged ABIs
         run: |
           set -euo pipefail
+          test -f scripts/verify_16kb_alignment.py
+          python3 -m unittest scripts/test_verify_16kb_alignment.py -v
           python3 scripts/verify_16kb_alignment.py
+
+      - name: Upload 16 KB Diagnostic Report on Verification Failure
+        if: failure() && hashFiles('16kb-alignment-report.json') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: VisionVPN-16KB-Alignment-Failure-Report
+          path: 16kb-alignment-report.json
+          retention-days: 7
 
       - name: Upload Debug, SBOM, 16 KB Report & Provenance Artifacts
         uses: actions/upload-artifact@v7
