@@ -480,8 +480,7 @@ fun SettingsScreen(
         var serverEntries by remember { mutableStateOf(chain.psiphonConfig.embeddedServerEntries) }
         var remotePubKey by remember { mutableStateOf(chain.psiphonConfig.remoteServerListSignaturePublicKey) }
         var remoteUrls by remember {
-            mutableStateOf(chain.psiphonConfig.remoteServerListUrls.joinToString("
-") { it.url })
+            mutableStateOf(chain.psiphonConfig.remoteServerListUrls.joinToString("\n") { it.url })
         }
 
         AlertDialog(
