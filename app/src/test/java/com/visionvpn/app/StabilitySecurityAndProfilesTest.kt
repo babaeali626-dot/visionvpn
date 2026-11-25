@@ -358,7 +358,7 @@ class StabilitySecurityAndProfilesTest {
         assertFalse(builder.isValidRealityPublicKey(""))
         assertFalse(builder.isValidRealityPublicKey("has spaces in key"))
         assertFalse("RawURLEncoding rejects Base64 padding", builder.isValidRealityPublicKey(Base64.getUrlEncoder().encodeToString(ByteArray(32) { (it + 1).toByte() })))
-        assertFalse("Standard Base64 alphabet is not Base64URL", builder.isValidRealityPublicKey(Base64.getEncoder().withoutPadding().encodeToString(ByteArray(32) { (it + 1).toByte() })))
+        assertFalse("Standard Base64 alphabet is not Base64URL", builder.isValidRealityPublicKey(Base64.getEncoder().withoutPadding().encodeToString(ByteArray(32) { 0xFF.toByte() })))
         assertFalse("Whitespace around a key must not be normalized", builder.isValidRealityPublicKey(" $validRealityPubKey32Bytes"))
         assertTrue(builder.isValidRealityPublicKey(validRealityPubKey32Bytes))
 
