@@ -38,17 +38,14 @@ fun VisionVpnTheme(
     themeVariant: VisionThemeVariant = VisionThemeVariant.VISION_NAVY,
     content: @Composable () -> Unit
 ) {
-    val direction = if (language.isRtl) LayoutDirection.Rtl else LayoutDirection.Ltr
-    val scheme = if (themeVariant == VisionThemeVariant.DEEP_SPACE) {
-        VisionDeepSpaceColorScheme
-    } else {
-        VisionDarkColorScheme
-    }
+    // Fixed for this release: English LTR and primary Vision UI Dark theme
+    val direction = LayoutDirection.Ltr
+    val scheme = VisionDarkColorScheme
 
     CompositionLocalProvider(LocalLayoutDirection provides direction) {
         MaterialTheme(
             colorScheme = scheme,
-            typography = buildVisionTypography(isPersian = language == AppLanguage.PERSIAN),
+            typography = buildVisionTypography(isPersian = false),
             content = content
         )
     }

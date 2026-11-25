@@ -53,6 +53,12 @@ data class ProxyProfile(
     val fingerprint: String = "chrome",
     val alpn: List<String> = emptyList(),
     val allowInsecure: Boolean = false,
+    /**
+     * Records whether an untrusted import (URI/subscription/JSON/YAML) attempted to disable
+     * TLS certificate validation (`allowInsecure=1` / `skip-cert-verify: true`).
+     * Never silently enables [allowInsecure]; user must explicitly opt in if desired.
+     */
+    val importedInsecureRequested: Boolean = false,
     // Reality parameters
     val realityPublicKey: String = "",
     val realityShortId: String = "",
@@ -75,6 +81,25 @@ data class ProxyProfile(
     val wgReserved: List<Int> = emptyList(),
     val wgMtu: Int = 1280
 ) {
+    /**
+     * True when the server's declared transport lacks TLS/REALITY encryption
+     * (e.g., plain VLESS/VMess `security=none` or plain SOCKS5).
+     */
+    val isUnencryptedTransport: Boolean
+        get() = when (protocol) {
+            ProxyProtocol.VLESS, ProxyProtocol.VMESS ->
+                !security.equals("tls", ignoreCase = true) && !security.equals("reality", ignoreCase = true)
+            ProxyProtocol.SOCKS5 -> true
+            else -> false
+        }
+
+    /**
+     * True when this profile either explicitly disabled TLS certificate verification,
+     * had an untrusted import attempt to disable it, or uses an unencrypted transport.
+     */
+    val hasSecurityWarning: Boolean
+        get() = allowInsecure || importedInsecureRequested || isUnencryptedTransport
+
     /**
      * Stable connection-parameter fingerprint used to deduplicate imports and prevent
      * stale latency measurements from attaching to a different profile after refresh/edit.

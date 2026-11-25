@@ -13,7 +13,9 @@ import com.visionvpn.app.data.model.ProxyProfile
 import com.visionvpn.app.data.model.ProxyProtocol
 import com.visionvpn.app.data.model.VpnConnectionState
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -75,10 +77,11 @@ class LatencyAndConnectionStateTest {
     @Test
     fun `PingTester cancellation aborts in-flight probes cleanly`() = runTest {
         val cleanedUp = AtomicBoolean(false)
+        val probeStarted = CompletableDeferred<Unit>()
         val slowProbe = ProxyLatencyProbe { _, _, _ ->
+            probeStarted.complete(Unit)
             try {
-                delay(10_000L)
-                LatencyTestOutcome.Success(50)
+                awaitCancellation()
             } catch (ce: CancellationException) {
                 cleanedUp.set(true)
                 throw ce
@@ -88,9 +91,11 @@ class LatencyAndConnectionStateTest {
         val job = launch {
             PingTester.testProfiles(listOf(testProfile("p1", "slow.example.test")), slowProbe)
         }
-        delay(50L)
-        job.cancel()
-        job.join()
+
+        // Wait until the Dispatchers.IO probe has actually entered its suspended operation.
+        // This prevents virtual-time advancement from cancelling the job before the IO task starts.
+        probeStarted.await()
+        job.cancelAndJoin()
         assertTrue(cleanedUp.get())
     }
 

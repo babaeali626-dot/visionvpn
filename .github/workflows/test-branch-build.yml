@@ -31,7 +31,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh workflow view android-build.yml --ref test
+          gh workflow view android-build.yml --ref test --yaml
 
       - name: Dispatch the full Android build on branch test
         env:

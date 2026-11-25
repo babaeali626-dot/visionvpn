@@ -147,7 +147,7 @@ object ProfileUriParser {
             ?.map { it.trim() }
             ?.filter { it.isNotBlank() }
             .orEmpty()
-        val allowInsecure = isTruthyFlag(params["allowinsecure"]) || isTruthyFlag(params["insecure"])
+        val importedInsecure = isTruthyFlag(params["allowinsecure"]) || isTruthyFlag(params["insecure"]) || isTruthyFlag(params["allow_insecure"])
 
         val realityPbk = if (security == "reality") params["pbk"]?.trim().orEmpty() else ""
         val realitySid = if (security == "reality") params["sid"]?.trim().orEmpty() else ""
@@ -167,7 +167,8 @@ object ProfileUriParser {
             sni = sni,
             fingerprint = if (fp == "none") "" else fp,
             alpn = alpn,
-            allowInsecure = allowInsecure,
+            allowInsecure = false,
+            importedInsecureRequested = importedInsecure,
             realityPublicKey = realityPbk,
             realityShortId = realitySid,
             wsPath = cleanWsPath,
@@ -250,7 +251,8 @@ object ProfileUriParser {
             sni = firstNonBlank(params["sni"], params["peer"], wsHost, host),
             fingerprint = params["fp"]?.trim()?.lowercase()?.ifBlank { "chrome" } ?: "chrome",
             alpn = params["alpn"]?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty(),
-            allowInsecure = isTruthyFlag(params["allowinsecure"]) || isTruthyFlag(params["insecure"]),
+            allowInsecure = false,
+            importedInsecureRequested = isTruthyFlag(params["allowinsecure"]) || isTruthyFlag(params["insecure"]) || isTruthyFlag(params["allow_insecure"]),
             wsPath = cleanWsPath,
             wsHost = wsHost,
             wsMaxEarlyData = maxEarlyData,
@@ -282,7 +284,8 @@ object ProfileUriParser {
             password = password,
             security = "tls",
             sni = firstNonBlank(params["sni"], host),
-            allowInsecure = isTruthyFlag(params["insecure"]) || isTruthyFlag(params["allowinsecure"]),
+            allowInsecure = false,
+            importedInsecureRequested = isTruthyFlag(params["insecure"]) || isTruthyFlag(params["allowinsecure"]) || isTruthyFlag(params["allow_insecure"]),
             obfsType = params["obfs"].orEmpty(),
             obfsPassword = params["obfs-password"].orEmpty()
         )
@@ -313,7 +316,8 @@ object ProfileUriParser {
             security = "tls",
             sni = firstNonBlank(params["sni"], host),
             alpn = params["alpn"]?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() } ?: listOf("h3"),
-            allowInsecure = isTruthyFlag(params["allow_insecure"]) || isTruthyFlag(params["insecure"]) || isTruthyFlag(params["allowinsecure"]),
+            allowInsecure = false,
+            importedInsecureRequested = isTruthyFlag(params["allow_insecure"]) || isTruthyFlag(params["insecure"]) || isTruthyFlag(params["allowinsecure"]),
             congestionControl = params["congestion_control"]?.ifBlank { "bbr" } ?: "bbr",
             udpRelayMode = params["udp_relay_mode"]?.ifBlank { "native" } ?: "native"
         )

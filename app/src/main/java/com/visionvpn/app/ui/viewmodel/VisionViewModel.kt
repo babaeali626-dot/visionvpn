@@ -9,16 +9,22 @@ import com.visionvpn.app.chain.LocalEngineState
 import com.visionvpn.app.chain.PluggableTransportAvailability
 import com.visionvpn.app.chain.RoutingGraph
 import com.visionvpn.app.chain.TorBridgeValidator
+import com.visionvpn.app.core.ExitIpInfo
+import com.visionvpn.app.core.LibboxRuntime
 import com.visionvpn.app.core.PingTester
 import com.visionvpn.app.core.VpnCoreController
 import com.visionvpn.app.data.model.AppLanguage
 import com.visionvpn.app.data.model.AppSettings
+import com.visionvpn.app.data.model.BuiltInProfilesCatalog
 import com.visionvpn.app.data.model.ChainConfig
 import com.visionvpn.app.data.model.ChainExitType
 import com.visionvpn.app.data.model.InstalledAppInfo
+import com.visionvpn.app.data.model.LocalEngineProfileType
 import com.visionvpn.app.data.model.ProfileGroup
 import com.visionvpn.app.data.model.ProxyProfile
+import com.visionvpn.app.data.model.PsiphonTransferUrl
 import com.visionvpn.app.data.model.SavedTorBridge
+import com.visionvpn.app.data.model.SelectableProfile
 import com.visionvpn.app.data.model.SubscriptionProfileManager
 import com.visionvpn.app.data.model.SubscriptionSource
 import com.visionvpn.app.data.model.TorBridgeMode
@@ -27,6 +33,8 @@ import com.visionvpn.app.data.model.VisionThemeVariant
 import com.visionvpn.app.data.model.VpnConnectionState
 import com.visionvpn.app.data.parser.SubscriptionFormatParser
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,8 +42,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -52,6 +58,8 @@ data class VisionUiState(
     val profiles: List<ProxyProfile> = emptyList(),
     val subscriptions: List<SubscriptionSource> = emptyList(),
     val profileGroups: List<ProfileGroup> = emptyList(),
+    val builtInProfiles: List<SelectableProfile.BuiltInEngine> = emptyList(),
+    val selectedProfile: SelectableProfile? = null,
     val activeProfileId: String? = null,
     val chainConfig: ChainConfig = ChainConfig(),
     val settings: AppSettings = AppSettings(),
@@ -60,24 +68,34 @@ data class VisionUiState(
     val activeExitProvider: ChainExitType = ChainExitType.NONE,
     val activeChainLabels: List<String> = emptyList(),
     val connectedSinceMs: Long? = null,
+    val exitIpInfo: ExitIpInfo = ExitIpInfo(),
+    val isFailClosedBlackholeActive: Boolean = false,
+    val osAlwaysOnEnabled: Boolean = false,
+    val osLockdownEnabled: Boolean = false,
     val engineStates: Map<String, LocalEngineState> = emptyMap(),
     val ptAvailability: PluggableTransportAvailability = PluggableTransportAvailability(null, null),
     val storageError: String? = null,
     val isTestingLatency: Boolean = false,
     val testingSubscriptionId: String? = null,
+    val latencyProgress: Pair<Int, Int>? = null,
     val isFetchingSubscription: Boolean = false,
     val refreshingSubscriptionIds: Set<String> = emptySet(),
     val isRegisteringWarp: Boolean = false,
     val snackbarMessage: String? = null
 ) {
     /**
-     * Explicit selected profile (never silently falls back to the first profile in standalone modes).
+     * Explicit selected remote proxy profile (null when a built-in local engine or nothing is selected).
      */
     val activeProfile: ProxyProfile?
-        get() = activeProfileId?.let { id -> profiles.firstOrNull { it.id == id } }
+        get() = activeProfileId
+            ?.takeUnless { LocalEngineProfileType.isReservedId(it) }
+            ?.let { id -> profiles.firstOrNull { it.id == id } }
 
+    /**
+     * Locked to English (LTR) for this release regardless of legacy stored settings.
+     */
     val isPersian: Boolean
-        get() = settings.language.isRtl
+        get() = false
 
     fun previewChainHops(): List<String> {
         if (connectionState == VpnConnectionState.CONNECTED && activeChainLabels.isNotEmpty()) {
@@ -86,14 +104,20 @@ data class VisionUiState(
         val entry = VpnCoreController.resolveEntryProfile(profiles, activeProfileId, chainConfig).getOrNull()
         val graph = RoutingGraph.build(entry, chainConfig, profiles).getOrNull()
         if (graph != null) return graph.describeChain()
-        val entryName = activeProfile?.name ?: if (isPersian) "بدون سرور" else "No Entry Node"
+        val entryName = selectedProfile?.displayName ?: "No Profile Selected"
         return listOf(entryName)
     }
 
     fun chainValidationError(): String? {
         val entryRes = VpnCoreController.resolveEntryProfile(profiles, activeProfileId, chainConfig)
         if (entryRes.isFailure) return entryRes.exceptionOrNull()?.message
-        return RoutingGraph.build(entryRes.getOrNull(), chainConfig, profiles).exceptionOrNull()?.message
+        val graphRes = RoutingGraph.build(entryRes.getOrNull(), chainConfig, profiles)
+        if (graphRes.isFailure) return graphRes.exceptionOrNull()?.message
+        val graph = graphRes.getOrThrow()
+        if (graph.includesPsiphon && !chainConfig.psiphonConfig.isProvisioned) {
+            return "Needs official Psiphon provisioning (ClientVersion, PropagationChannelId, SponsorId, and server discovery)."
+        }
+        return null
     }
 }
 
@@ -114,6 +138,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _isTestingLatency = MutableStateFlow(false)
     private val _testingSubscriptionId = MutableStateFlow<String?>(null)
+    private val _latencyProgress = MutableStateFlow<Pair<Int, Int>?>(null)
     private val _isFetchingSub = MutableStateFlow(false)
     private val _refreshingSubIds = MutableStateFlow<Set<String>>(emptySet())
     private val _isRegisteringWarp = MutableStateFlow(false)
@@ -122,22 +147,16 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     val installedApps: StateFlow<List<InstalledAppInfo>> = _installedApps.asStateFlow()
 
     private var latencyTestJob: Job? = null
+    private var vpnStartJob: Job? = null
     private val latencyRequestCounter = AtomicLong(0L)
     private val activeImportUrls = mutableSetOf<String>()
 
     /**
-     * Scoped language + theme flow so root [MainActivity] only recomposes on actual
-     * language or theme changes rather than on 1-second traffic ticks or status updates.
+     * Fixed to English LTR + Vision UI Dark (`VISION_NAVY`) for this release.
+     * Legacy persisted values in DataStore remain readable without affecting the active UI.
      */
     val themeLanguageState: StateFlow<Pair<AppLanguage, VisionThemeVariant>> =
-        repository.appSettingsFlow
-            .map { it.language to it.themeVariant }
-            .distinctUntilChanged()
-            .stateIn(
-                scope = viewModelScope,
-                started = SharingStarted.WhileSubscribed(5_000),
-                initialValue = AppLanguage.ENGLISH to VisionThemeVariant.VISION_NAVY
-            )
+        MutableStateFlow(AppLanguage.ENGLISH to VisionThemeVariant.VISION_NAVY).asStateFlow()
 
     /**
      * Separate 1-second traffic telemetry stream so only the TrafficGraphCard recomposes on ticks.
@@ -176,20 +195,39 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             controller.engineStates,
             _isTestingLatency,
             _testingSubscriptionId,
-            _isFetchingSub,
-            _refreshingSubIds
-        ) { engines, testing, testingSubId, fetching, refreshingIds ->
-            ActivitySlice(engines, testing, testingSubId, fetching, refreshingIds)
+            _latencyProgress,
+            _isFetchingSub
+        ) { engines, testing, testingSubId, progress, fetching ->
+            ActivitySlice(engines, testing, testingSubId, progress, fetching)
         },
-        combine(_isRegisteringWarp, _snackbarMessage, repository.storageErrorFlow) { warpBusy, snackbar, storageErr ->
-            Triple(warpBusy, snackbar, storageErr)
+        combine(
+            combine(_refreshingSubIds, _isRegisteringWarp, _snackbarMessage) { r, w, s -> Triple(r, w, s) },
+            repository.storageErrorFlow,
+            controller.exitIpInfo,
+            combine(
+                controller.isFailClosedBlackholeActive,
+                controller.osAlwaysOnEnabled,
+                controller.osLockdownEnabled
+            ) { bh, ao, ld -> Triple(bh, ao, ld) }
+        ) { (refreshingIds, warpBusy, snackbar), storageErr, exitIp, (blackhole, alwaysOn, lockdown) ->
+            ExtraSlice(refreshingIds, warpBusy, snackbar, storageErr, exitIp, blackhole, alwaysOn, lockdown)
         }
-    ) { persisted, core, activity, (warpBusy, snackbar, storageErr) ->
+    ) { persisted, core, activity, extra ->
         val groups = SubscriptionProfileManager.groupProfiles(persisted.profiles, persisted.subs)
+        val builtIns = BuiltInProfilesCatalog.buildBuiltInProfiles(persisted.chain, detectedPtAvailability)
+        val selected = BuiltInProfilesCatalog.resolveSelectedProfile(
+            profiles = persisted.profiles,
+            subscriptions = persisted.subs,
+            activeProfileId = persisted.activeId,
+            chainConfig = persisted.chain,
+            ptAvailability = detectedPtAvailability
+        )
         VisionUiState(
             profiles = persisted.profiles,
             subscriptions = persisted.subs,
             profileGroups = groups,
+            builtInProfiles = builtIns,
+            selectedProfile = selected,
             activeProfileId = persisted.activeId,
             chainConfig = persisted.chain,
             settings = persisted.settings,
@@ -210,15 +248,20 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             },
             activeChainLabels = core.chainLabels,
             connectedSinceMs = core.sinceMs,
+            exitIpInfo = extra.exitIp,
+            isFailClosedBlackholeActive = extra.blackhole,
+            osAlwaysOnEnabled = extra.alwaysOn,
+            osLockdownEnabled = extra.lockdown,
             engineStates = activity.engines,
             ptAvailability = detectedPtAvailability,
-            storageError = storageErr,
+            storageError = extra.storageErr,
             isTestingLatency = activity.testing,
             testingSubscriptionId = activity.testingSubId,
+            latencyProgress = activity.latencyProgress,
             isFetchingSubscription = activity.fetching,
-            refreshingSubscriptionIds = activity.refreshingIds,
-            isRegisteringWarp = warpBusy,
-            snackbarMessage = snackbar
+            refreshingSubscriptionIds = extra.refreshingIds,
+            isRegisteringWarp = extra.warpBusy,
+            snackbarMessage = extra.snackbar
         )
     }.stateIn(
         scope = viewModelScope,
@@ -246,8 +289,19 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         val engines: Map<String, LocalEngineState>,
         val testing: Boolean,
         val testingSubId: String?,
-        val fetching: Boolean,
-        val refreshingIds: Set<String>
+        val latencyProgress: Pair<Int, Int>?,
+        val fetching: Boolean
+    )
+
+    private data class ExtraSlice(
+        val refreshingIds: Set<String>,
+        val warpBusy: Boolean,
+        val snackbar: String?,
+        val storageErr: String?,
+        val exitIp: ExitIpInfo,
+        val blackhole: Boolean,
+        val alwaysOn: Boolean,
+        val lockdown: Boolean
     )
 
     override fun onCleared() {
@@ -262,10 +316,40 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             postMessage(validationError)
             return
         }
-        controller.requestConnect()
+        if (vpnStartJob?.isActive == true) return
+        val startJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                // A native Headless service must finish its NonCancellable close() before the VPN
+                // service is allowed to claim the process-wide Libbox lease.
+                val activeTest = latencyTestJob
+                if (activeTest != null) {
+                    latencyRequestCounter.incrementAndGet()
+                    latencyTestJob = null
+                    activeTest.cancelAndJoin()
+                    _isTestingLatency.value = false
+                    _testingSubscriptionId.value = null
+                    _latencyProgress.value = null
+                }
+                if (LibboxRuntime.currentMode() != com.visionvpn.app.core.LibboxLeaseMode.IDLE) {
+                    postMessage("Libbox is still cleaning up or is quarantined. Disconnect safely or restart VisionVPN before reconnecting.")
+                    return@launch
+                }
+                controller.requestConnect()
+            } finally {
+                // An older cancelled start must not clear a newer start request's Job reference.
+                if (vpnStartJob === coroutineContext[Job]) vpnStartJob = null
+            }
+        }
+        vpnStartJob = startJob
+        startJob.start()
     }
 
     fun stopVpn() {
+        // A pending start may still be waiting for a headless probe to finish closing. Cancel it
+        // before dispatching Disconnect so it cannot issue a late ACTION_START after the user
+        // has explicitly asked to stop.
+        vpnStartJob?.cancel()
+        vpnStartJob = null
         controller.requestDisconnect()
     }
 
@@ -273,9 +357,58 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         controller.requestReconnect()
     }
 
+    fun refreshExitIp() {
+        controller.refreshExitIp()
+    }
+
+    /**
+     * Selects a remote proxy profile. If the previous selection was a standalone local engine
+     * (`enabled && !useEntryProxy`), switches back to direct proxy mode so the selected server
+     * is used cleanly without silently attaching Tor/Psiphon.
+     */
     fun selectProfile(profileId: String) {
         viewModelScope.launch {
+            val currentChain = uiState.value.chainConfig
+            if (currentChain.enabled && !currentChain.useEntryProxy) {
+                repository.saveChainConfig(currentChain.withExitProvider(ChainExitType.NONE))
+            }
             repository.setActiveProfileId(profileId)
+        }
+    }
+
+    /**
+     * Selects a built-in local engine (Tor, Psiphon, or Cloudflare WARP) as a first-class
+     * standalone connection profile without modifying any saved remote profiles or subscriptions.
+     */
+    fun selectBuiltInProfile(engineType: LocalEngineProfileType) {
+        viewModelScope.launch {
+            val updatedChain = uiState.value.chainConfig.copy(
+                enabled = true,
+                useEntryProxy = false,
+                primaryExitType = engineType.exitType,
+                secondaryExitTypes = emptyList()
+            )
+            repository.saveChainConfig(updatedChain)
+            repository.setActiveProfileId(engineType.reservedProfileId)
+            if (engineType == LocalEngineProfileType.PSIPHON && !updatedChain.psiphonConfig.isProvisioned) {
+                postMessage("Psiphon selected — needs official Psiphon provisioning in Settings before connecting.")
+            }
+            if (uiState.value.connectionState == VpnConnectionState.CONNECTED) {
+                controller.requestReconnect()
+            }
+        }
+    }
+
+    /**
+     * Explicit user opt-in/opt-out for TLS certificate verification on a specific profile.
+     * Untrusted imports never enable this silently.
+     */
+    fun setProfileAllowInsecure(profileId: String, allow: Boolean) {
+        viewModelScope.launch {
+            val updated = uiState.value.profiles.map { p ->
+                if (p.id == profileId) p.copy(allowInsecure = allow) else p
+            }
+            repository.saveProfiles(updated)
         }
     }
 
@@ -284,10 +417,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             val updated = uiState.value.chainConfig.withExitProvider(provider)
             repository.saveChainConfig(updated)
             if (uiState.value.connectionState == VpnConnectionState.CONNECTED) {
-                postMessage(
-                    if (uiState.value.isPersian) "خروجی تغییر کرد؛ در حال اتصال مجدد…"
-                    else "Exit provider updated; reconnecting safely…"
-                )
+                postMessage("Exit provider updated; reconnecting safely…")
                 controller.requestReconnect()
             }
         }
@@ -318,22 +448,42 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun updatePsiphonProvisioning(
+        clientVersion: String,
         channelId: String,
         sponsorId: String,
         serverEntries: String,
-        clientVersion: String = uiState.value.chainConfig.psiphonConfig.clientVersion
+        remoteServerListSignaturePublicKey: String = "",
+        remoteServerListUrlsText: String = ""
     ) {
         viewModelScope.launch {
-            val updated = uiState.value.chainConfig.copy(
-                psiphonConfig = uiState.value.chainConfig.psiphonConfig.copy(
-                    clientVersion = clientVersion.trim(),
-                    propagationChannelId = channelId.trim(),
-                    sponsorId = sponsorId.trim(),
-                    embeddedServerEntries = serverEntries.trim()
-                )
+            val parsedUrls = remoteServerListUrlsText
+                .lineSequence()
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .mapIndexed { idx, url ->
+                    PsiphonTransferUrl(
+                        url = url,
+                        onlyAfterAttempts = if (idx == 0) 0 else idx,
+                        skipVerify = false
+                    )
+                }
+                .toList()
+
+            val updatedPsiphon = uiState.value.chainConfig.psiphonConfig.copy(
+                clientVersion = clientVersion.trim(),
+                propagationChannelId = channelId.trim(),
+                sponsorId = sponsorId.trim(),
+                embeddedServerEntries = serverEntries.trim(),
+                remoteServerListSignaturePublicKey = remoteServerListSignaturePublicKey.trim(),
+                remoteServerListUrls = parsedUrls
             )
+            val updated = uiState.value.chainConfig.copy(psiphonConfig = updatedPsiphon)
             repository.saveChainConfig(updated)
-            postMessage("Psiphon provisioning credentials saved securely.")
+            if (updatedPsiphon.isProvisioned) {
+                postMessage("Official Psiphon provisioning saved securely.")
+            } else {
+                postMessage("Psiphon config saved, but required official provisioning fields are still incomplete.")
+            }
         }
     }
 
@@ -428,10 +578,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             repository.saveChainConfig(
                 uiState.value.chainConfig.copy(torConfig = currentTor.copy(savedBridges = updatedList))
             )
-            postMessage(
-                if (uiState.value.isPersian) "پل تور به‌روزرسانی شد."
-                else "Tor bridge updated."
-            )
+            postMessage("Tor bridge updated.")
         }
     }
 
@@ -460,10 +607,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     fun clearAllTorBridges() {
         viewModelScope.launch {
             repository.clearSavedTorBridges()
-            postMessage(
-                if (uiState.value.isPersian) "همه پل‌های ذخیره شده حذف شدند."
-                else "All saved Tor bridges removed."
-            )
+            postMessage("All saved Tor bridges removed.")
         }
     }
 
@@ -473,10 +617,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 SubscriptionFormatParser.parse(rawText, subscriptionId = null)
             }
             parsedResult.onFailure { err ->
-                postMessage(
-                    err.message ?: if (uiState.value.isPersian) "پروفایل معتبری یافت نشد."
-                    else "No valid proxy configuration found."
-                )
+                postMessage(err.message ?: "No valid proxy configuration found.")
                 return@launch
             }
             val parsed = parsedResult.getOrThrow().profiles
@@ -493,14 +634,13 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 repository.setActiveProfileId(mutation.activeProfileId)
             }
             val skipped = parsed.size - mutation.addedCount
+            val insecureBlockedCount = parsed.count { it.importedInsecureRequested }
+            val securityNote = if (insecureBlockedCount > 0) {
+                " ($insecureBlockedCount had insecure TLS flag ignored for safety)"
+            } else ""
             postMessage(
-                if (uiState.value.isPersian) {
-                    if (skipped > 0) "${mutation.addedCount} پروفایل اضافه شد ($skipped تکراری نادیده گرفته شد)."
-                    else "${mutation.addedCount} پروفایل با موفقیت اضافه شد."
-                } else {
-                    if (skipped > 0) "Imported ${mutation.addedCount} profile(s) ($skipped duplicate(s) skipped)."
-                    else "Imported ${mutation.addedCount} profile(s)."
-                }
+                if (skipped > 0) "Imported ${mutation.addedCount} profile(s) ($skipped duplicate(s) skipped)$securityNote."
+                else "Imported ${mutation.addedCount} profile(s)$securityNote."
             )
         }
     }
@@ -534,10 +674,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         profiles = mutation.profiles,
                         activeProfileId = mutation.activeProfileId
                     )
-                    postMessage(
-                        if (snapshot.isPersian) "اشتراک همگام شد: ${mutation.updatedCount} سرور"
-                        else "Subscription synced (${fetched.format.label}): ${mutation.updatedCount} nodes"
-                    )
+                    postMessage("Subscription synced (${fetched.format.label}): ${mutation.updatedCount} nodes")
                 }.onFailure { err ->
                     postMessage(err.message ?: "Subscription fetch failed")
                 }
@@ -572,12 +709,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         profiles = mutation.profiles,
                         activeProfileId = mutation.activeProfileId
                     )
-                    postMessage(
-                        if (snapshot.isPersian) "اشتراک «${sub.name}» به‌روزرسانی شد (${mutation.updatedCount} سرور)"
-                        else "Refreshed '${sub.name}': ${mutation.updatedCount} nodes"
-                    )
+                    postMessage("Refreshed '${sub.name}': ${mutation.updatedCount} nodes")
                 }.onFailure { err ->
-                    // Preserve last-known-good profiles; record error only on this subscription
                     val updatedSubs = SubscriptionProfileManager.refreshSubscriptionFailure(
                         existingSubscriptions = uiState.value.subscriptions,
                         subscriptionId = subscriptionId,
@@ -610,15 +743,13 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 activeProfileId = mutation.activeProfileId
             )
             if (subName != null) {
-                postMessage(
-                    if (snapshot.isPersian) "اشتراک «$subName» حذف شد."
-                    else "Removed subscription '$subName'."
-                )
+                postMessage("Removed subscription '$subName'.")
             }
         }
     }
 
     fun deleteProfile(profileId: String) {
+        if (LocalEngineProfileType.isReservedId(profileId)) return
         viewModelScope.launch {
             val snapshot = uiState.value
             val target = snapshot.profiles.firstOrNull { it.id == profileId }
@@ -643,6 +774,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         latencyTestJob = null
         _isTestingLatency.value = false
         _testingSubscriptionId.value = null
+        _latencyProgress.value = null
     }
 
     fun testSingleLatency(profile: ProxyProfile) {
@@ -662,17 +794,38 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun runLatencyTests(targets: List<ProxyProfile>, scopeSubscriptionId: String?) {
-        latencyTestJob?.cancel()
+        if (vpnStartJob?.isActive == true || !controller.canStartLatencyTests() ||
+            uiState.value.connectionState.isActiveOrStarting ||
+            LibboxRuntime.currentMode() != com.visionvpn.app.core.LibboxLeaseMode.IDLE
+        ) {
+            postMessage("Disconnect the active VPN and wait for Libbox cleanup before running proxy latency tests.")
+            return
+        }
+        val previousJob = latencyTestJob
         val requestId = latencyRequestCounter.incrementAndGet()
         latencyTestJob = viewModelScope.launch {
+            // Deterministically cancel and join any active bulk test before starting a new one
+            previousJob?.cancel()
+            runCatching { previousJob?.join() }
+            if (latencyRequestCounter.get() != requestId) return@launch
+            if (LibboxRuntime.currentMode() != com.visionvpn.app.core.LibboxLeaseMode.IDLE) {
+                postMessage("Proxy tests stopped because Libbox cleanup is incomplete or quarantined. Explicitly Disconnect or restart VisionVPN.")
+                return@launch
+            }
+
             _isTestingLatency.value = true
             _testingSubscriptionId.value = scopeSubscriptionId
+            _latencyProgress.value = 0 to targets.size
             try {
                 val measurements = PingTester.testProfiles(
                     profiles = targets,
-                    probe = proxyLatencyProbe
+                    probe = proxyLatencyProbe,
+                    onProgress = { completed, total ->
+                        if (latencyRequestCounter.get() == requestId) {
+                            _latencyProgress.value = completed to total
+                        }
+                    }
                 )
-                // Drop stale results if a newer test or cancellation superseded this request
                 if (latencyRequestCounter.get() != requestId) return@launch
 
                 val snapshot = uiState.value
@@ -686,19 +839,21 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 repository.saveProfiles(sortedProfiles)
 
                 val okCount = measurements.count { it.status == com.visionvpn.app.data.model.LatencyStatus.SUCCESS }
-                postMessage(
-                    if (snapshot.isPersian) {
-                        "تست واقعی پروکسی انجام شد: $okCount از ${targets.size} موفق (مرتب‌سازی درون هر اشتراک)"
-                    } else {
-                        "Proxy test complete: $okCount/${targets.size} reachable (sorted per subscription)"
-                    }
-                )
+                if (LibboxRuntime.currentMode() == com.visionvpn.app.core.LibboxLeaseMode.FAULTED) {
+                    postMessage(
+                        "Proxy testing stopped early: native Libbox cleanup could not be confirmed. " +
+                            "$okCount/${targets.size} profiles reached before quarantine. Explicitly Disconnect or restart VisionVPN."
+                    )
+                } else {
+                    postMessage("Proxy test complete: $okCount/${targets.size} reachable (sorted per subscription)")
+                }
             } catch (ce: CancellationException) {
                 throw ce
             } finally {
                 if (latencyRequestCounter.get() == requestId) {
                     _isTestingLatency.value = false
                     _testingSubscriptionId.value = null
+                    _latencyProgress.value = null
                 }
             }
         }

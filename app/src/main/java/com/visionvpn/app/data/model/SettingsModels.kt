@@ -35,13 +35,22 @@ enum class VisionThemeVariant(val label: String) {
     DEEP_SPACE("Deep Space OLED")
 }
 
+/**
+ * Application settings with privacy-first first-install defaults (`bypassLan = false`,
+ * `bypassIran = false`, `failClosedMode = true`, `strictDnsLeakProtection = true`,
+ * `ipv6Policy = BLOCK_IPV6`).
+ *
+ * Legacy persisted [language] and [themeVariant] fields are kept for backward-compatible
+ * JSON decoding, while [effectiveLanguage] and [effectiveThemeVariant] lock this release
+ * to English LTR + Vision UI Dark (`VISION_NAVY`).
+ */
 @Serializable
 data class AppSettings(
-    val schemaVersion: Int = 2,
+    val schemaVersion: Int = 3,
     val splitTunnelMode: SplitTunnelMode = SplitTunnelMode.DISABLED,
     val splitTunnelPackages: Set<String> = emptySet(),
-    val bypassLan: Boolean = true,
-    val bypassIran: Boolean = true,
+    val bypassLan: Boolean = false,
+    val bypassIran: Boolean = false,
     val blockAds: Boolean = true,
     val remoteDns: String = "https://1.1.1.1/dns-query",
     val directDns: String = "223.5.5.5",
@@ -53,7 +62,13 @@ data class AppSettings(
     val mtu: Int = 9000,
     val language: AppLanguage = AppLanguage.ENGLISH,
     val themeVariant: VisionThemeVariant = VisionThemeVariant.VISION_NAVY
-)
+) {
+    val effectiveLanguage: AppLanguage
+        get() = AppLanguage.ENGLISH
+
+    val effectiveThemeVariant: VisionThemeVariant
+        get() = VisionThemeVariant.VISION_NAVY
+}
 
 data class InstalledAppInfo(
     val packageName: String,

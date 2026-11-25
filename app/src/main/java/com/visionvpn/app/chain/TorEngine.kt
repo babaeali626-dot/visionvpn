@@ -3,6 +3,8 @@ package com.visionvpn.app.chain
 import android.content.Context
 import com.visionvpn.app.data.model.TorBridgeMode
 import com.visionvpn.app.data.model.TorChainConfig
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -61,7 +63,19 @@ class TorEngine(
     }
 
     override suspend fun start(): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
+            startInternal()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            withContext(NonCancellable) { stop() }
+            throw ce
+        } catch (e: Exception) {
+            withContext(NonCancellable) { stop() }
+            Result.failure(e)
+        }
+    }
+
+    private fun startInternal() {
             val gen = sessionGeneration.incrementAndGet()
             bootstrapped = false
             lastConnectProbeOkMs = 0L
@@ -131,7 +145,6 @@ class TorEngine(
                     )
                 }
             }
-        }
     }
 
     internal fun buildTorrc(
@@ -238,7 +251,7 @@ class TorEngine(
 
         val now = System.currentTimeMillis()
         if (now - lastConnectProbeOkMs >= CONNECT_PROBE_CACHE_MS) {
-            val probe = Socks5Probe.verifyConnect(config.socksPort)
+            val probe = Socks5Probe.verifyTlsOverSocks5(config.socksPort)
             if (probe !is Socks5Probe.ProbeResult.Success) {
                 return@withContext false
             }
@@ -249,7 +262,7 @@ class TorEngine(
             _state.value = _state.value.copy(
                 status = LocalEngineStatus.CONNECTED,
                 phaseLabel = "Connected",
-                message = "Tor 100% • Circuit Verified"
+                message = "Tor 100% • Circuit TLS-Verified"
             )
         }
         true

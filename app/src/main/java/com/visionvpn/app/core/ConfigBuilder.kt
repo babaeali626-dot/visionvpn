@@ -15,6 +15,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import java.util.Base64
 
 /**
  * Generates Sing-box v1.10.7 JSON configurations directly from a validated [RoutingGraph],
@@ -42,6 +43,78 @@ class ConfigBuilder {
         const val CLASH_API_PORT = 9090
         const val PROBE_PROXY_PORT = 10808
     }
+
+    /**
+     * Validates profile security and protocol parameters before emitting Sing-box v1.10.7 JSON.
+     * Prevents incomplete REALITY configs from silently downgrading to partial/misleading TLS.
+     */
+    /**
+     * Supported uTLS fingerprints in Sing-box v1.10.7 (`common/tls/utls_client.go`).
+     */
+    private val supportedUtlsFingerprints = setOf(
+        "chrome", "firefox", "edge", "safari", "360", "qq", "ios", "android", "random", "randomized"
+    )
+
+    /**
+     * Decodes a REALITY X25519 public key (`pbk`) using URL-safe Base64 (matching Sing-box v1.10.7
+     * `base64.RawURLEncoding`, rejecting whitespace and non-URL-safe characters) and verifies
+     * that it decodes to exactly 32 bytes.
+     */
+    internal fun isValidRealityPublicKey(rawKey: String): Boolean {
+        val trimmed = rawKey
+        if (trimmed.isEmpty() || trimmed != trimmed.trim()) return false
+        // Go's base64.RawURLEncoding used by Sing-box rejects padding and whitespace. Match
+        // that contract exactly instead of silently normalizing an invalid imported key.
+        if (!Regex("^[A-Za-z0-9_-]+$").matches(trimmed)) return false
+        val decoded = runCatching { Base64.getUrlDecoder().decode(trimmed) }.getOrNull() ?: return false
+        return decoded.size == 32
+    }
+
+    /**
+     * Validates a REALITY `short_id` (`sid`): empty (when server permits) or even-length
+     * hexadecimal string up to 8 bytes (16 hex characters), matching Sing-box v1.10.7 hex decode.
+     */
+    internal fun isValidRealityShortId(rawShortId: String): Boolean {
+        val trimmed = rawShortId
+        if (trimmed.isEmpty()) return true
+        return trimmed == trimmed.trim() && trimmed.length <= 16 && trimmed.length % 2 == 0 &&
+            Regex("^[0-9a-fA-F]+$").matches(trimmed)
+    }
+
+    fun validateProfile(profile: ProxyProfile): Result<Unit> = runCatching {
+        require(profile.server.isNotBlank()) { "Profile '${profile.name}' is missing a server hostname or IP." }
+        require(profile.port in 1..65535) { "Profile '${profile.name}' has an invalid port: ${profile.port}." }
+
+        val sec = profile.security.trim().lowercase()
+        val net = profile.network.trim().lowercase().ifBlank { "tcp" }
+
+        if (sec == "reality") {
+            require(isValidRealityPublicKey(profile.realityPublicKey)) {
+                "Profile '${profile.name}' declares security=reality but public_key (pbk) is not a valid 32-byte Base64URL X25519 key."
+            }
+            require(isValidRealityShortId(profile.realityShortId)) {
+                "Profile '${profile.name}' has an invalid REALITY short_id (must be empty or even-length hex up to 16 chars / 8 bytes)."
+            }
+            val effectiveSni = profile.sni.trim()
+            require(effectiveSni.isNotBlank()) {
+                "Profile '${profile.name}' declares security=reality and requires a non-blank SNI (server_name)."
+            }
+            val fp = profile.fingerprint.trim().lowercase()
+            require(fp.isNotEmpty() && fp in supportedUtlsFingerprints) {
+                "Profile '${profile.name}' requires a supported, non-empty uTLS fingerprint for REALITY."
+            }
+            require(net !in setOf("ws", "httpupgrade")) {
+                "Profile '${profile.name}' uses REALITY with incompatible transport '$net'."
+            }
+        }
+
+        if (profile.protocol == ProxyProtocol.WIREGUARD) {
+            require(profile.wgPrivateKey.isNotBlank() && profile.wgPublicKey.isNotBlank()) {
+                "WireGuard profile '${profile.name}' is missing private_key or peer_public_key."
+            }
+        }
+    }
+
 
     fun buildSingBoxConfig(
         graph: RoutingGraph,
@@ -239,7 +312,7 @@ class ConfigBuilder {
                 put("detour", finalTag)
                 put("strategy", effectiveStrategy)
             })
-            if (bootstrapDomains.isNotEmpty() || (!enforceStrictPrivacy && settings.bypassIran)) {
+            if (bootstrapDomains.isNotEmpty() || (!enforceStrictPrivacy && settings.bypassIran && !settings.strictDnsLeakProtection)) {
                 add(buildJsonObject {
                     put("tag", "dns-bootstrap")
                     put("address", settings.directDns)
@@ -472,7 +545,9 @@ class ConfigBuilder {
         tag: String,
         profile: ProxyProfile,
         detourTag: String?
-    ): JsonObject = buildJsonObject {
+    ): JsonObject {
+        validateProfile(profile).getOrThrow()
+        return buildJsonObject {
         put("tag", tag)
         if (!detourTag.isNullOrBlank()) {
             put("detour", detourTag)
@@ -572,6 +647,7 @@ class ConfigBuilder {
                 if (profile.password.isNotBlank()) put("password", profile.password)
             }
         }
+        }
     }
 
     private fun kotlinx.serialization.json.JsonObjectBuilder.putTlsAndTransport(profile: ProxyProfile) {
@@ -581,22 +657,29 @@ class ConfigBuilder {
             putJsonObject("tls") {
                 put("enabled", true)
                 put("server_name", profile.sni.ifBlank { profile.wsHost.ifBlank { profile.server } })
-                put("insecure", profile.allowInsecure)
+                val isRealitySecurity = profile.security.equals("reality", ignoreCase = true)
+                put("insecure", if (isRealitySecurity) false else profile.allowInsecure)
                 if (profile.alpn.isNotEmpty()) {
                     putJsonArray("alpn") { profile.alpn.forEach { add(JsonPrimitive(it)) } }
                 }
-                val fp = profile.fingerprint.trim()
-                if (fp.isNotBlank() && !fp.equals("none", ignoreCase = true)) {
+                val isReality = profile.security.equals("reality", ignoreCase = true)
+                val rawFp = profile.fingerprint.trim()
+                val effectiveFp = when {
+                    rawFp.isNotBlank() && !rawFp.equals("none", ignoreCase = true) -> rawFp
+                    isReality -> "chrome"
+                    else -> ""
+                }
+                if (effectiveFp.isNotBlank()) {
                     putJsonObject("utls") {
                         put("enabled", true)
-                        put("fingerprint", fp)
+                        put("fingerprint", effectiveFp)
                     }
                 }
-                if (profile.security.equals("reality", ignoreCase = true) && profile.realityPublicKey.isNotBlank()) {
+                if (isReality) {
                     putJsonObject("reality") {
                         put("enabled", true)
-                        put("public_key", profile.realityPublicKey)
-                        put("short_id", profile.realityShortId)
+                        put("public_key", profile.realityPublicKey.trim())
+                        put("short_id", profile.realityShortId.trim())
                     }
                 }
             }

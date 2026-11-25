@@ -13,6 +13,7 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.visionvpn.app.core.LibboxRuntime
 import com.visionvpn.app.ui.navigation.VisionAppScaffold
 import com.visionvpn.app.ui.theme.VisionVpnTheme
 import com.visionvpn.app.ui.viewmodel.VisionViewModel
@@ -40,7 +41,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             // Observe only language & theme at root so 1s traffic/status ticks never recompose the entire tree
-            val (language, themeVariant) by viewModel.themeLanguageState.collectAsStateWithLifecycle()
+            val (language, themeVariant) = viewModel.themeLanguageState.collectAsStateWithLifecycle().value
             VisionVpnTheme(
                 language = language,
                 themeVariant = themeVariant
@@ -55,7 +56,20 @@ class MainActivity : ComponentActivity() {
 
     private fun handleVpnToggle() {
         val currentState = viewModel.uiState.value.connectionState
-        if (currentState.isActiveOrStarting) {
+        val runtimeMode = LibboxRuntime.currentMode()
+        val vpnOwnsRuntime = runtimeMode in setOf(
+            com.visionvpn.app.core.LibboxLeaseMode.VPN_STARTING,
+            com.visionvpn.app.core.LibboxLeaseMode.VPN_ACTIVE,
+            com.visionvpn.app.core.LibboxLeaseMode.BLACKHOLE_STARTING,
+            com.visionvpn.app.core.LibboxLeaseMode.BLACKHOLE_ACTIVE,
+            com.visionvpn.app.core.LibboxLeaseMode.FAULTED
+        )
+        val childCleanupRequired = viewModel.uiState.value.engineStates.values.any {
+            it.phaseLabel == "Cleanup Required"
+        }
+        if (currentState.isActiveOrStarting || viewModel.uiState.value.isFailClosedBlackholeActive ||
+            vpnOwnsRuntime || childCleanupRequired
+        ) {
             viewModel.stopVpn()
             return
         }

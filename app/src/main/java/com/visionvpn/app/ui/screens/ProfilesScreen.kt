@@ -23,9 +23,11 @@ import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -45,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.unit.dp
 import com.visionvpn.app.data.model.ChainExitType
+import com.visionvpn.app.data.model.LocalEngineProfileType
 import com.visionvpn.app.data.model.ProfileGroup
 import com.visionvpn.app.data.model.ProxyProfile
 import com.visionvpn.app.data.model.SubscriptionSource
@@ -62,6 +65,7 @@ import com.visionvpn.app.ui.viewmodel.VisionUiState
 fun ProfilesScreen(
     uiState: VisionUiState,
     onSelectProfile: (String) -> Unit,
+    onSelectBuiltInProfile: (LocalEngineProfileType) -> Unit,
     onImportRaw: (String) -> Unit,
     onImportSubscription: (name: String, url: String) -> Unit,
     onRefreshSubscription: (subscriptionId: String) -> Unit,
@@ -73,7 +77,8 @@ fun ProfilesScreen(
     onCancelLatencyTests: () -> Unit,
     onSelectExitProvider: (ChainExitType) -> Unit,
     onSelectTorBridgeMode: (TorBridgeMode) -> Unit,
-    onAddTorBridges: (String) -> Unit
+    onAddTorBridges: (String) -> Unit,
+    onSetProfileAllowInsecure: (profileId: String, allow: Boolean) -> Unit
 ) {
     val isPersian = uiState.isPersian
     val clipboard = LocalClipboardManager.current
@@ -81,6 +86,7 @@ fun ProfilesScreen(
     var showQrScanner by remember { mutableStateOf(false) }
     var showTorBridgeDialog by remember { mutableStateOf(false) }
     var pendingDeleteSub by remember { mutableStateOf<SubscriptionSource?>(null) }
+    var tlsSecurityProfile by remember { mutableStateOf<ProxyProfile?>(null) }
     val collapsedGroups = remember { mutableStateMapOf<String, Boolean>() }
 
     // Cancel active proxy latency probes when leaving the screen so no test cores linger
@@ -172,6 +178,33 @@ fun ProfilesScreen(
             }
         }
 
+        uiState.latencyProgress?.let { (done, total) ->
+            if (uiState.isTestingLatency && total > 0) {
+                GlassCard(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Testing proxies ($done / $total)…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = VisionColors.CyanHighlight
+                        )
+                        TextButton(onClick = onCancelLatencyTests) {
+                            Text("Cancel", color = VisionColors.CoralError)
+                        }
+                    }
+                    LinearProgressIndicator(
+                        progress = { (done.toFloat() / total.toFloat()).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = VisionColors.CyanHighlight,
+                        trackColor = VisionColors.CardBorder
+                    )
+                }
+            }
+        }
+
         LazyColumn(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -181,7 +214,7 @@ fun ProfilesScreen(
             item(key = "built-in-engines") {
                 BuiltInEnginesCard(
                     uiState = uiState,
-                    isPersian = isPersian,
+                    onSelectBuiltInProfile = onSelectBuiltInProfile,
                     onSelectExitProvider = onSelectExitProvider,
                     onSelectTorBridgeMode = onSelectTorBridgeMode,
                     onOpenCustomBridgeDialog = { showTorBridgeDialog = true }
@@ -262,6 +295,7 @@ fun ProfilesScreen(
                                         onSelectProfile(profile.id)
                                     },
                                     onTestSingle = { onTestSingle(profile) },
+                                    onConfigureTlsSecurity = { tlsSecurityProfile = profile },
                                     onDelete = { onDeleteProfile(profile.id) }
                                 )
                             }
@@ -410,6 +444,55 @@ fun ProfilesScreen(
         )
     }
 
+    tlsSecurityProfile?.let { target ->
+        AlertDialog(
+            onDismissRequest = { tlsSecurityProfile = null },
+            containerColor = VisionColors.CardSurfaceDark,
+            title = {
+                Text(
+                    text = "TLS Verification — ${target.name}",
+                    style = MaterialTheme.typography.titleLarge
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = if (target.allowInsecure) {
+                            "Certificate validation is currently DISABLED for '${target.name}'. This exposes traffic on this node to active MITM interception."
+                        } else {
+                            "Imported metadata requested skipping TLS certificate verification for '${target.name}'. VisionVPN blocked this by default to prevent MITM attacks."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = VisionColors.AmberWarning
+                    )
+                    Text(
+                        text = "Only allow insecure TLS if you control this server and understand the risk. Applies strictly to this single profile.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = VisionColors.TextSecondary
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onSetProfileAllowInsecure(target.id, !target.allowInsecure)
+                        tlsSecurityProfile = null
+                    }
+                ) {
+                    Text(
+                        text = if (target.allowInsecure) "Re-enable TLS Verification" else "Allow Insecure TLS (Risky)",
+                        color = if (target.allowInsecure) VisionColors.EmeraldConnected else VisionColors.CoralError
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { tlsSecurityProfile = null }) {
+                    Text("Cancel", color = VisionColors.TextSecondary)
+                }
+            }
+        )
+    }
+
     if (showQrScanner) {
         QrScannerDialog(
             isPersian = isPersian,
@@ -432,11 +515,12 @@ fun ProfilesScreen(
 @Composable
 private fun BuiltInEnginesCard(
     uiState: VisionUiState,
-    isPersian: Boolean,
+    onSelectBuiltInProfile: (LocalEngineProfileType) -> Unit,
     onSelectExitProvider: (ChainExitType) -> Unit,
     onSelectTorBridgeMode: (TorBridgeMode) -> Unit,
     onOpenCustomBridgeDialog: () -> Unit
 ) {
+    val isPersian = false
     val activeExit = uiState.chainConfig.activeExitProvider
     val torConfig = uiState.chainConfig.torConfig
     val psiphonConfig = uiState.chainConfig.psiphonConfig
@@ -444,7 +528,7 @@ private fun BuiltInEnginesCard(
 
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         Text(
-            text = if (isPersian) "پروفایل‌های داخلی (Tor / Psiphon / WARP)" else "Built-in Engine Profiles",
+            text = "Built-in / Local Engines",
             style = MaterialTheme.typography.titleMedium
         )
         Spacer(modifier = Modifier.height(6.dp))
@@ -453,26 +537,18 @@ private fun BuiltInEnginesCard(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             FilterChip(
-                selected = activeExit == ChainExitType.TOR,
-                onClick = {
-                    onSelectExitProvider(if (activeExit == ChainExitType.TOR) ChainExitType.NONE else ChainExitType.TOR)
-                },
+                selected = uiState.selectedProfile?.id == LocalEngineProfileType.TOR.reservedProfileId,
+                onClick = { onSelectBuiltInProfile(LocalEngineProfileType.TOR) },
                 label = { Text("Tor") }
             )
             FilterChip(
-                selected = activeExit == ChainExitType.PSIPHON,
-                onClick = {
-                    onSelectExitProvider(if (activeExit == ChainExitType.PSIPHON) ChainExitType.NONE else ChainExitType.PSIPHON)
-                },
+                selected = uiState.selectedProfile?.id == LocalEngineProfileType.PSIPHON.reservedProfileId,
+                onClick = { onSelectBuiltInProfile(LocalEngineProfileType.PSIPHON) },
                 label = { Text("Psiphon") }
             )
             FilterChip(
-                selected = activeExit == ChainExitType.CLOUDFLARE_WARP,
-                onClick = {
-                    onSelectExitProvider(
-                        if (activeExit == ChainExitType.CLOUDFLARE_WARP) ChainExitType.NONE else ChainExitType.CLOUDFLARE_WARP
-                    )
-                },
+                selected = uiState.selectedProfile?.id == LocalEngineProfileType.WARP.reservedProfileId,
+                onClick = { onSelectBuiltInProfile(LocalEngineProfileType.WARP) },
                 label = { Text("WARP") }
             )
         }
@@ -524,7 +600,7 @@ private fun BuiltInEnginesCard(
                 else "Region: ${psiphonConfig.regionCode} • Provisioned"
             } else {
                 if (isPersian) "نیازمند تکمیل کلیدهای Psiphon در تنظیمات"
-                else "Configure Psiphon provisioning credentials in Settings"
+                else "Needs official Psiphon provisioning (configure in Settings)"
             }
             Text(text = statusNote, style = MaterialTheme.typography.bodyMedium, color = VisionColors.CyanHighlight)
         } else if (activeExit == ChainExitType.CLOUDFLARE_WARP) {
@@ -638,6 +714,7 @@ private fun ProfileRowCard(
     isSelected: Boolean,
     onSelect: () -> Unit,
     onTestSingle: () -> Unit,
+    onConfigureTlsSecurity: () -> Unit,
     onDelete: () -> Unit
 ) {
     GlassCard(
@@ -681,6 +758,22 @@ private fun ProfileRowCard(
                 ) {
                     ProtocolBadge(profile.protocol.displayName)
                     LatencyPill(profile.latencyMs, status = profile.effectiveLatencyStatus())
+                    if (profile.hasSecurityWarning) {
+                        Text(
+                            text = if (profile.isUnencryptedTransport) "Unencrypted" else "TLS Warn",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = VisionColors.AmberWarning
+                        )
+                    }
+                }
+            }
+            if (profile.importedInsecureRequested || profile.allowInsecure) {
+                IconButton(onClick = onConfigureTlsSecurity) {
+                    Icon(
+                        imageVector = Icons.Rounded.Security,
+                        contentDescription = "TLS Verification Override",
+                        tint = if (profile.allowInsecure) VisionColors.CoralError else VisionColors.AmberWarning
+                    )
                 }
             }
             IconButton(onClick = onTestSingle) {

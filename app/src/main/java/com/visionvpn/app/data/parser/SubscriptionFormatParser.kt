@@ -271,7 +271,7 @@ object SubscriptionFormatParser {
             else -> "none"
         }
         val sni = tls?.get("server_name")?.jsonPrimitive?.contentOrNull?.ifBlank { server } ?: server
-        val allowInsecure = tls?.get("insecure")?.jsonPrimitive?.booleanOrNull ?: false
+        val importedInsecure = tls?.get("insecure")?.jsonPrimitive?.booleanOrNull ?: false
         val fp = utls?.get("fingerprint")?.jsonPrimitive?.contentOrNull.orEmpty()
         val alpn = (tls?.get("alpn") as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
 
@@ -304,7 +304,8 @@ object SubscriptionFormatParser {
                     sni = sni,
                     fingerprint = fp,
                     alpn = alpn,
-                    allowInsecure = allowInsecure,
+                    allowInsecure = false,
+                    importedInsecureRequested = importedInsecure,
                     realityPublicKey = reality?.get("public_key")?.jsonPrimitive?.contentOrNull.orEmpty(),
                     realityShortId = reality?.get("short_id")?.jsonPrimitive?.contentOrNull.orEmpty(),
                     wsPath = wsPath,
@@ -332,7 +333,8 @@ object SubscriptionFormatParser {
                     sni = sni,
                     fingerprint = fp,
                     alpn = alpn,
-                    allowInsecure = allowInsecure,
+                    allowInsecure = false,
+                    importedInsecureRequested = importedInsecure,
                     wsPath = wsPath,
                     wsHost = wsHost,
                     wsMaxEarlyData = wsMaxEarlyData,
@@ -356,7 +358,8 @@ object SubscriptionFormatParser {
                     sni = sni,
                     fingerprint = fp,
                     alpn = alpn,
-                    allowInsecure = allowInsecure,
+                    allowInsecure = false,
+                    importedInsecureRequested = importedInsecure,
                     wsPath = wsPath,
                     wsHost = wsHost,
                     wsMaxEarlyData = wsMaxEarlyData,
@@ -390,7 +393,8 @@ object SubscriptionFormatParser {
                     password = obj["password"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                     security = "tls",
                     sni = sni,
-                    allowInsecure = allowInsecure,
+                    allowInsecure = false,
+                    importedInsecureRequested = importedInsecure,
                     obfsType = obfs?.get("type")?.jsonPrimitive?.contentOrNull.orEmpty(),
                     obfsPassword = obfs?.get("password")?.jsonPrimitive?.contentOrNull.orEmpty()
                 )
@@ -407,7 +411,8 @@ object SubscriptionFormatParser {
                 security = "tls",
                 sni = sni,
                 alpn = alpn.ifEmpty { listOf("h3") },
-                allowInsecure = allowInsecure,
+                allowInsecure = false,
+                    importedInsecureRequested = importedInsecure,
                 congestionControl = obj["congestion_control"]?.jsonPrimitive?.contentOrNull ?: "bbr",
                 udpRelayMode = obj["udp_relay_mode"]?.jsonPrimitive?.contentOrNull ?: "native"
             )
@@ -479,6 +484,7 @@ object SubscriptionFormatParser {
             val alpn = (tlsObj?.get("alpn") as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
             val fp = tlsObj?.get("fingerprint")?.jsonPrimitive?.contentOrNull.orEmpty()
             val sniFromTls = tlsObj?.get("serverName")?.jsonPrimitive?.contentOrNull.orEmpty()
+            val xrayImportedInsecure = tlsObj?.get("allowInsecure")?.jsonPrimitive?.booleanOrNull == true
 
             when (proto) {
                 "vless", "vmess" -> {
@@ -506,6 +512,7 @@ object SubscriptionFormatParser {
                         fingerprint = fp.ifBlank { if (security != "none") "chrome" else "" },
                         alpn = alpn,
                         allowInsecure = false,
+                        importedInsecureRequested = xrayImportedInsecure,
                         realityPublicKey = if (security == "reality") tlsObj?.get("publicKey")?.jsonPrimitive?.contentOrNull.orEmpty() else "",
                         realityShortId = if (security == "reality") tlsObj?.get("shortId")?.jsonPrimitive?.contentOrNull.orEmpty() else "",
                         wsPath = cleanWsPath,
@@ -535,6 +542,7 @@ object SubscriptionFormatParser {
                         fingerprint = fp.ifBlank { "chrome" },
                         alpn = alpn,
                         allowInsecure = false,
+                        importedInsecureRequested = xrayImportedInsecure,
                         wsPath = cleanWsPath,
                         wsHost = wsHost,
                         wsMaxEarlyData = maxEd,
@@ -738,6 +746,8 @@ object SubscriptionFormatParser {
             ?.filter { it.isNotBlank() }
             .orEmpty()
         val grpcService = m["grpc-opts.grpc-service-name"].orEmpty()
+        val clashImportedInsecure = m["skip-cert-verify"].equals("true", ignoreCase = true) ||
+            m["insecure"].equals("true", ignoreCase = true)
 
         return when (type) {
             "vless" -> {
@@ -758,6 +768,7 @@ object SubscriptionFormatParser {
                     fingerprint = fp,
                     alpn = alpn,
                     allowInsecure = false,
+                    importedInsecureRequested = clashImportedInsecure,
                     realityPublicKey = realityPbk,
                     realityShortId = realitySid,
                     wsPath = cleanWsPath,
@@ -786,6 +797,7 @@ object SubscriptionFormatParser {
                     fingerprint = fp,
                     alpn = alpn,
                     allowInsecure = false,
+                    importedInsecureRequested = clashImportedInsecure,
                     wsPath = cleanWsPath,
                     wsHost = wsHost,
                     wsMaxEarlyData = maxEd,
@@ -810,6 +822,7 @@ object SubscriptionFormatParser {
                     fingerprint = fp.ifBlank { "chrome" },
                     alpn = alpn,
                     allowInsecure = false,
+                    importedInsecureRequested = clashImportedInsecure,
                     wsPath = cleanWsPath,
                     wsHost = wsHost,
                     wsMaxEarlyData = maxEd,
@@ -841,6 +854,7 @@ object SubscriptionFormatParser {
                 security = "tls",
                 sni = sni,
                 allowInsecure = false,
+                    importedInsecureRequested = clashImportedInsecure,
                 obfsType = m["obfs"].orEmpty(),
                 obfsPassword = m["obfs-password"].orEmpty()
             )
@@ -857,6 +871,7 @@ object SubscriptionFormatParser {
                 sni = sni,
                 alpn = alpn.ifEmpty { listOf("h3") },
                 allowInsecure = false,
+                    importedInsecureRequested = clashImportedInsecure,
                 congestionControl = m["congestion-controller"]?.ifBlank { "bbr" } ?: "bbr",
                 udpRelayMode = m["udp-relay-mode"]?.ifBlank { "native" } ?: "native"
             )

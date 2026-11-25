@@ -34,18 +34,42 @@ sealed class RoutingNode {
         val isCustomExit: Boolean = false
     ) : RoutingNode() {
         override val displayName: String = profile.name
-        override val capabilities: NodeCapabilities = NodeCapabilities(
-            supportsTcp = true,
-            // SOCKS5 proxy profiles without confirmed UDP ASSOCIATE are treated as TCP-only
-            supportsUdp = profile.protocol != ProxyProtocol.SOCKS5,
-            requiresUdpTransport = profile.protocol in setOf(
-                ProxyProtocol.WIREGUARD,
-                ProxyProtocol.HYSTERIA2,
-                ProxyProtocol.TUIC
-            ),
-            supportsUpstreamSocks = true,
-            canBeStandalone = true
-        )
+        override val capabilities: NodeCapabilities = deriveProxyCapabilities(profile)
+
+        companion object {
+            /**
+             * Conservative per-profile capability derivation based on protocol and transport.
+             * Native UDP protocols (WireGuard/Hysteria2/TUIC) and direct TCP stream proxies
+             * (VLESS/VMess/Trojan/Shadowsocks over raw TCP) support UDP relay in Sing-box v1.10.7.
+             * SOCKS5 (unconfirmed UDP ASSOCIATE) and HTTP/CDN transports (ws/grpc/httpupgrade)
+             * are conservatively treated as TCP-only so nested WireGuard/WARP hops are rejected.
+             */
+            fun deriveProxyCapabilities(profile: ProxyProfile): NodeCapabilities {
+                val net = profile.network.trim().lowercase().ifBlank { "tcp" }
+                val supportsUdp = when (profile.protocol) {
+                    ProxyProtocol.WIREGUARD,
+                    ProxyProtocol.HYSTERIA2,
+                    ProxyProtocol.TUIC -> true
+                    ProxyProtocol.SOCKS5 -> false
+                    ProxyProtocol.VLESS,
+                    ProxyProtocol.VMESS,
+                    ProxyProtocol.TROJAN,
+                    ProxyProtocol.SHADOWSOCKS -> net == "tcp"
+                }
+                val requiresUdp = profile.protocol in setOf(
+                    ProxyProtocol.WIREGUARD,
+                    ProxyProtocol.HYSTERIA2,
+                    ProxyProtocol.TUIC
+                )
+                return NodeCapabilities(
+                    supportsTcp = true,
+                    supportsUdp = supportsUdp,
+                    requiresUdpTransport = requiresUdp,
+                    supportsUpstreamSocks = true,
+                    canBeStandalone = true
+                )
+            }
+        }
     }
 
     data class WarpNode(
@@ -178,7 +202,7 @@ data class RoutingGraph(
 
             val nodes = mutableListOf<RoutingNode>()
             val seenProfileIds = mutableSetOf<String>()
-            val allocatedPorts = mutableSetOf(ConfigBuilder.CLASH_API_PORT)
+            val allocatedPorts = mutableSetOf(ConfigBuilder.CLASH_API_PORT, ConfigBuilder.PROBE_PROXY_PORT)
 
             fun claimPort(port: Int, owner: String) {
                 require(port in 1024..65535) { "Invalid loopback port $port for $owner." }

@@ -80,7 +80,7 @@ fun SettingsScreen(
     onSelectExitProvider: (ChainExitType) -> Unit,
     onSetUseEntryProxy: (Boolean) -> Unit,
     onSelectPsiphonRegion: (String) -> Unit,
-    onUpdatePsiphonProvisioning: (channelId: String, sponsorId: String, serverEntries: String) -> Unit,
+    onUpdatePsiphonProvisioning: (clientVersion: String, channelId: String, sponsorId: String, serverEntries: String, remotePubKey: String, remoteUrls: String) -> Unit,
     onSetTorBridgesEnabled: (Boolean) -> Unit,
     onSelectTorBridgeMode: (TorBridgeMode) -> Unit,
     onAddTorBridges: (String) -> Unit,
@@ -330,9 +330,24 @@ fun SettingsScreen(
             )
             Spacer(modifier = Modifier.height(6.dp))
             SettingsSwitchRow(
-                title = if (isPersian) "حالت قطع ایمن (Fail-Closed)" else "Fail-Closed Mode (No Direct Fallback)",
+                title = "Fail-Closed Mode (No Direct Fallback)",
                 checked = settings.failClosedMode,
                 onCheckedChange = { v -> onUpdateSettings { it.copy(failClosedMode = v) } }
+            )
+            Text(
+                text = if (settings.failClosedMode) {
+                    "Active: On mid-session engine/chain failure, VisionVPN holds a blocking TUN (dropping traffic) until you explicitly tap Disconnect."
+                } else {
+                    "Warning: Fail-Closed is OFF. If an engine or chain hop fails, the tunnel closes and device traffic returns to your direct physical network."
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = if (settings.failClosedMode) VisionColors.TextSecondary else VisionColors.AmberWarning
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Android OS Always-on: ${if (uiState.osAlwaysOnEnabled) "Enabled" else "Off"} • OS Lockdown (Block without VPN): ${if (uiState.osLockdownEnabled) "Active" else "Off (enable in Android VPN Settings for boot/crash lockdown)"}",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (uiState.osLockdownEnabled) VisionColors.EmeraldConnected else VisionColors.TextSecondary
             )
             SettingsSwitchRow(
                 title = if (isPersian) "محافظت سخت‌گیرانه نشت DNS" else "Strict DNS Leak Protection",
@@ -454,90 +469,105 @@ fun SettingsScreen(
             }
         }
 
-        // G. Language & Theme
-        GlassCard(modifier = Modifier.fillMaxWidth()) {
-            Text(
-                text = if (isPersian) "زبان و ظاهر برنامه" else "Language & Theme",
-                style = MaterialTheme.typography.titleMedium
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AppLanguage.entries.forEach { lang ->
-                    FilterChip(
-                        selected = settings.language == lang,
-                        onClick = { onUpdateSettings { it.copy(language = lang) } },
-                        label = { Text(lang.displayName) }
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                VisionThemeVariant.entries.forEach { variant ->
-                    FilterChip(
-                        selected = settings.themeVariant == variant,
-                        onClick = { onUpdateSettings { it.copy(themeVariant = variant) } },
-                        label = { Text(variant.label) }
-                    )
-                }
-            }
-        }
-
         Spacer(modifier = Modifier.height(14.dp))
     }
 
-    // Psiphon Official Provisioning Dialog
+    // Psiphon Official Provisioning Dialog (exposes all required official fields)
     if (showPsiphonProvisionDialog) {
+        var clientVersion by remember { mutableStateOf(chain.psiphonConfig.clientVersion) }
         var channelId by remember { mutableStateOf(chain.psiphonConfig.propagationChannelId) }
         var sponsorId by remember { mutableStateOf(chain.psiphonConfig.sponsorId) }
         var serverEntries by remember { mutableStateOf(chain.psiphonConfig.embeddedServerEntries) }
+        var remotePubKey by remember { mutableStateOf(chain.psiphonConfig.remoteServerListSignaturePublicKey) }
+        var remoteUrls by remember {
+            mutableStateOf(chain.psiphonConfig.remoteServerListUrls.joinToString("
+") { it.url })
+        }
 
         AlertDialog(
             onDismissRequest = { showPsiphonProvisionDialog = false },
             containerColor = VisionColors.CardSurfaceDark,
             title = {
                 Text(
-                    text = if (isPersian) "پیکربندی رسمی سایفون" else "Psiphon Official Provisioning",
+                    text = "Psiphon Official Provisioning",
                     style = MaterialTheme.typography.titleLarge
                 )
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Supply official Psiphon Inc. provisioning values: ClientVersion, PropagationChannelId, SponsorId, and either TargetServerEntry or signed HTTPS RemoteServerListURLs.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = VisionColors.TextSecondary
+                    )
+                    OutlinedTextField(
+                        value = clientVersion,
+                        onValueChange = { clientVersion = it },
+                        label = { Text("ClientVersion (required)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                     OutlinedTextField(
                         value = channelId,
                         onValueChange = { channelId = it },
-                        label = { Text("PropagationChannelId") },
+                        label = { Text("PropagationChannelId (required)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
                         value = sponsorId,
                         onValueChange = { sponsorId = it },
-                        label = { Text("SponsorId") },
+                        label = { Text("SponsorId (required)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
                         value = serverEntries,
                         onValueChange = { serverEntries = it },
-                        label = { Text("TargetServerEntry (optional)") },
+                        label = { Text("TargetServerEntry (optional if remote list used)") },
                         singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = remotePubKey,
+                        onValueChange = { remotePubKey = it },
+                        label = { Text("RemoteServerListSignaturePublicKey (Base64)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = remoteUrls,
+                        onValueChange = { remoteUrls = it },
+                        label = { Text("RemoteServerListURLs (https://, one per line)") },
+                        minLines = 2,
+                        maxLines = 4,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
             },
             confirmButton = {
                 GradientPrimaryButton(
-                    text = if (isPersian) "ذخیره" else "Save",
-                    enabled = channelId.isNotBlank() && sponsorId.isNotBlank(),
+                    text = "Save",
+                    enabled = clientVersion.isNotBlank() && channelId.isNotBlank() && sponsorId.isNotBlank(),
                     onClick = {
-                        onUpdatePsiphonProvisioning(channelId, sponsorId, serverEntries)
+                        onUpdatePsiphonProvisioning(
+                            clientVersion,
+                            channelId,
+                            sponsorId,
+                            serverEntries,
+                            remotePubKey,
+                            remoteUrls
+                        )
                         showPsiphonProvisionDialog = false
                     }
                 )
             },
             dismissButton = {
                 TextButton(onClick = { showPsiphonProvisionDialog = false }) {
-                    Text(if (isPersian) "انصراف" else "Cancel", color = VisionColors.TextSecondary)
+                    Text("Cancel", color = VisionColors.TextSecondary)
                 }
             }
         )

@@ -11,6 +11,7 @@ import androidx.core.app.NotificationCompat
 import com.visionvpn.app.MainActivity
 import com.visionvpn.app.R
 import com.visionvpn.app.VisionVpnApplication
+import com.visionvpn.app.core.LibboxRuntime
 import com.visionvpn.app.data.model.VpnConnectionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,9 +46,22 @@ class VisionVpnService : VpnService() {
                 startJob?.cancel()
                 startJob = null
                 serviceScope.launch {
-                    controller.stopTunnelInternal()
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
+                    val stopped = controller.stopTunnelInternal()
+                    if (stopped) {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    } else {
+                        // Do not destroy the foreground service while a TUN or native lease is
+                        // still retained; that could tear down the last protected interface.
+                        val manager = getSystemService(NotificationManager::class.java)
+                        manager.notify(
+                            NOTIFICATION_ID,
+                            buildNotification(
+                                title = "VisionVPN • Cleanup Required",
+                                contentText = controller.statusMessage.value.ifBlank { "Libbox cleanup incomplete; retry Disconnect or restart the app." }
+                            )
+                        )
+                    }
                 }
             }
             ACTION_START -> {
@@ -77,8 +91,21 @@ class VisionVpnService : VpnService() {
                             )
                         )
                     }.onFailure {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        if (controller.shouldKeepVpnServiceAlive()) {
+                            val manager = getSystemService(NotificationManager::class.java)
+                            manager.notify(
+                                NOTIFICATION_ID,
+                                buildNotification(
+                                    title = "VisionVPN • Protection Retained",
+                                    contentText = controller.statusMessage.value.ifBlank {
+                                        "Fail-Closed interface/runtime retained. Tap Disconnect to clean up."
+                                    }
+                                )
+                            )
+                        } else {
+                            stopForeground(STOP_FOREGROUND_REMOVE)
+                            stopSelf()
+                        }
                     }
                 }
             }
@@ -103,7 +130,9 @@ class VisionVpnService : VpnService() {
         startJob?.cancel()
         startJob = null
         val controller = (application as VisionVpnApplication).vpnCoreController
-        if (controller.connectionState.value != VpnConnectionState.DISCONNECTED) {
+        if (controller.connectionState.value != VpnConnectionState.DISCONNECTED ||
+            LibboxRuntime.currentMode() != com.visionvpn.app.core.LibboxLeaseMode.IDLE
+        ) {
             runCatching {
                 runBlocking(Dispatchers.IO) {
                     withTimeoutOrNull(1_000L) {

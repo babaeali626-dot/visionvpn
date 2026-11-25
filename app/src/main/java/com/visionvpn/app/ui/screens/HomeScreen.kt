@@ -2,6 +2,7 @@ package com.visionvpn.app.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,20 +23,29 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Hub
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -43,9 +53,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import com.visionvpn.app.core.ExitIpStatus
+import com.visionvpn.app.data.model.BuiltInProfilesCatalog
 import com.visionvpn.app.data.model.ChainExitType
+import com.visionvpn.app.data.model.LocalEngineProfileType
 import com.visionvpn.app.data.model.ProxyProfile
 import com.visionvpn.app.data.model.PsiphonChainConfig
+import com.visionvpn.app.data.model.SelectableProfile
 import com.visionvpn.app.data.model.VpnConnectionState
 import com.visionvpn.app.ui.components.ConnectionOrb
 import com.visionvpn.app.ui.components.GlassCard
@@ -66,11 +80,12 @@ fun HomeScreen(
     telemetryState: TelemetryUiState,
     onToggleConnection: () -> Unit,
     onSelectProfile: (String) -> Unit,
+    onSelectBuiltInProfile: (LocalEngineProfileType) -> Unit,
+    onRefreshExitIp: () -> Unit,
     onOpenChainManager: () -> Unit,
     onOpenProfiles: () -> Unit
 ) {
-    val isPersian = uiState.isPersian
-    var showServerSheet by remember { mutableStateOf(false) }
+    var showProfileSheet by remember { mutableStateOf(false) }
 
     var elapsedSeconds by remember { mutableLongStateOf(0L) }
     LaunchedEffect(uiState.connectedSinceMs, uiState.connectionState) {
@@ -86,26 +101,26 @@ fun HomeScreen(
     }
 
     val statusText = when (uiState.connectionState) {
-        VpnConnectionState.CONNECTED -> if (isPersian) "متصل و تأییدشده" else "Protected"
-        VpnConnectionState.CONNECTING -> if (isPersian) "در حال اتصال…" else "Connecting…"
-        VpnConnectionState.ENGINE_READY -> if (isPersian) "هسته آماده است…" else "Engine Ready…"
-        VpnConnectionState.VERIFYING_CONNECTIVITY -> if (isPersian) "تأیید اتصال اینترنت…" else "Verifying…"
-        VpnConnectionState.RECONNECTING -> if (isPersian) "اتصال مجدد…" else "Reconnecting…"
-        VpnConnectionState.DISCONNECTING -> if (isPersian) "در حال قطع…" else "Disconnecting…"
-        VpnConnectionState.ERROR -> if (isPersian) "خطای اتصال" else "Error"
-        VpnConnectionState.DISCONNECTED -> if (isPersian) "قطع شده" else "Disconnected"
+        VpnConnectionState.CONNECTED -> "Protected"
+        VpnConnectionState.CONNECTING -> "Connecting…"
+        VpnConnectionState.ENGINE_READY -> "Engine Ready…"
+        VpnConnectionState.VERIFYING_CONNECTIVITY -> "Verifying…"
+        VpnConnectionState.RECONNECTING -> "Reconnecting…"
+        VpnConnectionState.DISCONNECTING -> "Disconnecting…"
+        VpnConnectionState.ERROR -> "Error"
+        VpnConnectionState.DISCONNECTED -> "Disconnected"
     }
     val hintText = when (uiState.connectionState) {
         VpnConnectionState.CONNECTED -> formatDuration(elapsedSeconds)
-        VpnConnectionState.CONNECTING -> if (isPersian) "راه‌اندازی هسته…" else "Starting Sing-box…"
-        VpnConnectionState.ENGINE_READY -> if (isPersian) "برقراری تونل…" else "Establishing Tunnel…"
-        VpnConnectionState.VERIFYING_CONNECTIVITY -> if (isPersian) "تست دسترسی واقعی…" else "Checking Internet…"
-        VpnConnectionState.RECONNECTING -> if (isPersian) "در حال اتصال مجدد…" else "Reconnecting…"
-        else -> if (isPersian) "برای اتصال لمس کنید" else "Tap to Connect"
+        VpnConnectionState.CONNECTING -> "Starting Sing-box…"
+        VpnConnectionState.ENGINE_READY -> "Establishing Tunnel…"
+        VpnConnectionState.VERIFYING_CONNECTIVITY -> "Checking Internet…"
+        VpnConnectionState.RECONNECTING -> "Reconnecting…"
+        else -> "Tap to Connect"
     }
 
     val exitProvider = uiState.activeExitProvider
-    val exitLabel = if (isPersian) exitProvider.labelFa else exitProvider.labelEn
+    val exitLabel = exitProvider.labelEn
 
     Column(
         modifier = Modifier
@@ -130,12 +145,9 @@ fun HomeScreen(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Column(modifier = Modifier.weight(1f)) {
+                Text(text = "VisionVPN", style = MaterialTheme.typography.headlineLarge)
                 Text(
-                    text = if (isPersian) "ویژن وی‌پی‌ان" else "VisionVPN",
-                    style = MaterialTheme.typography.headlineLarge
-                )
-                Text(
-                    text = if (isPersian) "خروجی فعال: $exitLabel" else "Exit: $exitLabel",
+                    text = "Final Exit: $exitLabel",
                     style = MaterialTheme.typography.bodyMedium,
                     color = VisionColors.CyanHighlight
                 )
@@ -186,6 +198,13 @@ fun HomeScreen(
             )
         }
 
+        // Public Exit IP & Country Card (routed exclusively through the active VPN tunnel)
+        ExitIpStatusCard(
+            connectionState = uiState.connectionState,
+            exitIpInfo = uiState.exitIpInfo,
+            onRefresh = onRefreshExitIp
+        )
+
         val torState = uiState.engineStates["tor"]
         if (exitProvider == ChainExitType.TOR && torState != null && torState.bootstrapProgress in 1..99) {
             GlassCard(modifier = Modifier.fillMaxWidth()) {
@@ -207,25 +226,23 @@ fun HomeScreen(
             val req = PsiphonChainConfig.findRegionOrNull(uiState.chainConfig.psiphonConfig.regionCode)
             val psiState = uiState.engineStates["psiphon"]
             GlassCard(modifier = Modifier.fillMaxWidth()) {
-                val reqDisplay = if (req != null) {
-                    "${req.flag} ${if (isPersian) req.nameFa else req.nameEn}"
-                } else {
-                    "Invalid (${uiState.chainConfig.psiphonConfig.regionCode})"
-                }
+                val reqDisplay = if (req != null) "${req.flag} ${req.nameEn}" else "Invalid (${uiState.chainConfig.psiphonConfig.regionCode})"
                 val obsDisplay = psiState?.observedRegion?.let { " • Observed: $it" }.orEmpty()
+                val provNote = if (!uiState.chainConfig.psiphonConfig.isProvisioned) {
+                    " • Needs official Psiphon provisioning"
+                } else ""
                 Text(
-                    text = "Psiphon: $reqDisplay • ${psiState?.phaseLabel ?: "Idle"}$obsDisplay",
+                    text = "Psiphon: $reqDisplay • ${psiState?.phaseLabel ?: "Idle"}$obsDisplay$provNote",
                     style = MaterialTheme.typography.bodyLarge,
-                    color = VisionColors.CyanHighlight
+                    color = if (uiState.chainConfig.psiphonConfig.isProvisioned) VisionColors.CyanHighlight else VisionColors.AmberWarning
                 )
             }
         }
 
+        // Unified Connection Profile Selector Card (Built-in Local Engines, Subscriptions, Manual)
         GlassCard(
             modifier = Modifier.fillMaxWidth(),
-            onClick = {
-                if (uiState.profiles.isEmpty()) onOpenProfiles() else showServerSheet = true
-            }
+            onClick = { showProfileSheet = true }
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -239,38 +256,85 @@ fun HomeScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.Public,
+                        imageVector = if (uiState.selectedProfile is SelectableProfile.BuiltInEngine) {
+                            Icons.Rounded.Shield
+                        } else {
+                            Icons.Rounded.Public
+                        },
                         contentDescription = null,
                         tint = VisionColors.TextPrimary
                     )
                 }
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = if (isPersian) "سرور ورودی فعال" else "Entry Server",
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                    val standalone = exitProvider != ChainExitType.NONE && !uiState.chainConfig.useEntryProxy
-                    Text(
-                        text = if (standalone) {
-                            if (isPersian) "حالت مستقل (${exitProvider.labelFa})" else "Standalone (${exitProvider.labelEn})"
-                        } else {
-                            uiState.activeProfile?.name
-                                ?: if (isPersian) "سروری انتخاب نشده (برای افزودن لمس کنید)" else "No server selected (Tap to select)"
-                        },
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1
-                    )
-                    if (!standalone) {
-                        uiState.activeProfile?.let { active ->
+                    when (val selected = uiState.selectedProfile) {
+                        is SelectableProfile.BuiltInEngine -> {
+                            Text(
+                                text = "Connection Profile • Built-in Engine",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = VisionColors.TextSecondary
+                            )
+                            Text(
+                                text = selected.displayName,
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1
+                            )
                             Spacer(modifier = Modifier.height(4.dp))
                             Row(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                ProtocolBadge(active.protocol.displayName)
-                                LatencyPill(active.latencyMs, status = active.effectiveLatencyStatus())
+                                ProtocolBadge("LOCAL ENGINE")
+                                Text(
+                                    text = selected.statusNote,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (selected.isReady) VisionColors.EmeraldConnected else VisionColors.AmberWarning,
+                                    maxLines = 1
+                                )
                             }
+                        }
+                        is SelectableProfile.RemoteProxy -> {
+                            Text(
+                                text = "Connection Profile • ${selected.ownerGroupName}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = VisionColors.TextSecondary,
+                                maxLines = 1
+                            )
+                            Text(
+                                text = selected.profile.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                ProtocolBadge(selected.profile.protocol.displayName)
+                                LatencyPill(
+                                    selected.profile.latencyMs,
+                                    status = selected.profile.effectiveLatencyStatus()
+                                )
+                                if (selected.profile.hasSecurityWarning) {
+                                    Text(
+                                        text = if (selected.profile.isUnencryptedTransport) "Unencrypted" else "TLS Warning",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = VisionColors.AmberWarning
+                                    )
+                                }
+                            }
+                        }
+                        null -> {
+                            Text(
+                                text = "Connection Profile",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = VisionColors.TextSecondary
+                            )
+                            Text(
+                                text = "No profile selected (Tap to choose)",
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1
+                            )
                         }
                     }
                 }
@@ -294,14 +358,14 @@ fun HomeScreen(
         ) {
             SectionHeader(
                 title = if (uiState.connectionState == VpnConnectionState.CONNECTED) {
-                    if (isPersian) "مسیر فعال تأییدشده" else "Verified Active Routing Chain"
+                    "Verified Active Routing Order"
                 } else {
-                    if (isPersian) "مسیر زنجیره اتصال (Entry → Exit)" else "Configured Routing Chain"
+                    "Configured Routing Order"
                 },
                 subtitle = validationError ?: if (uiState.chainConfig.enabled) {
-                    if (isPersian) "زنجیره فعال است" else "Exit provider routing active"
+                    "Final exit: $exitLabel (Tap to customize chain)"
                 } else {
-                    if (isPersian) "اتصال مستقیم از سرور ورودی" else "Direct entry proxy (Tap to customize)"
+                    "Direct connection profile (Tap to add chain hops)"
                 },
                 trailing = {
                     Icon(
@@ -320,10 +384,7 @@ fun HomeScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                ChainNodeChip(
-                    label = if (isPersian) "دستگاه" else "Device",
-                    accentColor = VisionColors.TextSecondary
-                )
+                ChainNodeChip(label = "Device", accentColor = VisionColors.TextSecondary)
                 hops.forEachIndexed { idx, hopLabel ->
                     Icon(
                         imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
@@ -344,58 +405,316 @@ fun HomeScreen(
         TrafficGraphCard(
             history = telemetryState.trafficHistory,
             latest = telemetryState.latestTraffic,
-            isPersian = isPersian
+            isPersian = false
         )
 
         Spacer(modifier = Modifier.height(12.dp))
     }
 
-    if (showServerSheet) {
+    if (showProfileSheet) {
+        var searchQuery by remember { mutableStateOf("") }
+        val collapsedGroups = remember { mutableStateMapOf<String, Boolean>() }
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        val q = searchQuery.trim()
+
         ModalBottomSheet(
-            onDismissRequest = { showServerSheet = false },
+            onDismissRequest = { showProfileSheet = false },
             sheetState = sheetState,
             containerColor = VisionColors.CardSurfaceDark
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 8.dp)
+                    .padding(horizontal = 18.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = if (isPersian) "انتخاب سریع سرور" else "Select Entry Server",
-                    style = MaterialTheme.typography.titleLarge
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.height(340.dp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    uiState.profileGroups.forEach { group ->
-                        if (group.profiles.isNotEmpty()) {
-                            item(key = "sheet-header-${group.groupKey}") {
-                                Text(
-                                    text = group.subscription?.name
-                                        ?: if (isPersian) "پروفایل‌های دستی" else "Manual / Local",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = VisionColors.CyanHighlight,
-                                    modifier = Modifier.padding(top = 4.dp)
-                                )
-                            }
-                            items(group.profiles, key = { "sheet-${it.id}" }) { profile ->
-                                QuickServerRow(
-                                    profile = profile,
-                                    selected = profile.id == uiState.activeProfile?.id,
+                    Text(text = "Select Connection Profile", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        text = "Manage",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = VisionColors.CyanHighlight,
+                        modifier = Modifier.clickable {
+                            showProfileSheet = false
+                            onOpenProfiles()
+                        }
+                    )
+                }
+
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.Search,
+                            contentDescription = null,
+                            tint = VisionColors.TextSecondary
+                        )
+                    },
+                    label = { Text("Search profiles, subscriptions, or engines…") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.height(400.dp)
+                ) {
+                    // Group 1: Built-in / Local Engines (Tor, Psiphon, Cloudflare WARP)
+                    val matchingBuiltIns = uiState.builtInProfiles.filter { item ->
+                        q.isEmpty() ||
+                            item.displayName.contains(q, ignoreCase = true) ||
+                            item.subtitle.contains(q, ignoreCase = true) ||
+                            item.statusNote.contains(q, ignoreCase = true)
+                    }
+                    if (matchingBuiltIns.isNotEmpty()) {
+                        val builtInCollapsed = collapsedGroups[BuiltInProfilesCatalog.BUILT_IN_GROUP_KEY] == true && q.isEmpty()
+                        item(key = "sheet-header-${BuiltInProfilesCatalog.BUILT_IN_GROUP_KEY}") {
+                            SelectorGroupHeader(
+                                title = "Built-in / Local Engines",
+                                count = matchingBuiltIns.size,
+                                collapsed = builtInCollapsed,
+                                onToggle = {
+                                    collapsedGroups[BuiltInProfilesCatalog.BUILT_IN_GROUP_KEY] = !builtInCollapsed
+                                }
+                            )
+                        }
+                        if (!builtInCollapsed) {
+                            items(matchingBuiltIns, key = { "sheet-builtin-${it.id}" }) { engine ->
+                                val selected = uiState.selectedProfile?.id == engine.id
+                                BuiltInSelectorRow(
+                                    engine = engine,
+                                    selected = selected,
                                     onClick = {
-                                        onSelectProfile(profile.id)
-                                        showServerSheet = false
+                                        onSelectBuiltInProfile(engine.engineType)
+                                        showProfileSheet = false
                                     }
                                 )
                             }
                         }
                     }
+
+                    // Group 2+: Subscription groups and Manual / Local group (shared model with ProfilesScreen)
+                    uiState.profileGroups.forEach { group ->
+                        val filteredProfiles = if (q.isEmpty()) {
+                            group.profiles
+                        } else {
+                            val subMatches = group.subscription?.name?.contains(q, ignoreCase = true) == true
+                            if (subMatches) group.profiles
+                            else group.profiles.filter { p ->
+                                p.name.contains(q, ignoreCase = true) ||
+                                    p.server.contains(q, ignoreCase = true) ||
+                                    p.protocol.displayName.contains(q, ignoreCase = true)
+                            }
+                        }
+                        if (filteredProfiles.isNotEmpty()) {
+                            val groupCollapsed = collapsedGroups[group.groupKey] == true && q.isEmpty()
+                            item(key = "sheet-header-${group.groupKey}") {
+                                SelectorGroupHeader(
+                                    title = group.subscription?.name ?: "Manual / Local",
+                                    count = filteredProfiles.size,
+                                    collapsed = groupCollapsed,
+                                    onToggle = {
+                                        collapsedGroups[group.groupKey] = !groupCollapsed
+                                    }
+                                )
+                            }
+                            if (!groupCollapsed) {
+                                items(filteredProfiles, key = { "sheet-remote-${it.id}" }) { profile ->
+                                    QuickServerRow(
+                                        profile = profile,
+                                        selected = uiState.selectedProfile?.id == profile.id,
+                                        onClick = {
+                                            onSelectProfile(profile.id)
+                                            showProfileSheet = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExitIpStatusCard(
+    connectionState: VpnConnectionState,
+    exitIpInfo: com.visionvpn.app.core.ExitIpInfo,
+    onRefresh: () -> Unit
+) {
+    val isConnected = connectionState == VpnConnectionState.CONNECTED
+    GlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        borderColor = when (exitIpInfo.status) {
+            ExitIpStatus.VERIFIED -> VisionColors.EmeraldConnected.copy(alpha = 0.55f)
+            ExitIpStatus.STALE -> VisionColors.AmberWarning.copy(alpha = 0.55f)
+            else -> VisionColors.CardBorder
+        }
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "Public Exit (Tunnel-Verified)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = VisionColors.TextSecondary
+                )
+                when {
+                    !isConnected || exitIpInfo.status == ExitIpStatus.DISCONNECTED -> {
+                        Text(
+                            text = "IP: —  •  Country: Disconnected",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = VisionColors.TextSecondary
+                        )
+                    }
+                    exitIpInfo.status == ExitIpStatus.LOADING -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = VisionColors.CyanHighlight
+                            )
+                            Text(
+                                text = "Verifying tunnel exit IP & country…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = VisionColors.CyanHighlight
+                            )
+                        }
+                    }
+                    exitIpInfo.status == ExitIpStatus.VERIFIED -> {
+                        Text(
+                            text = "IP: ${exitIpInfo.ip ?: "—"}",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = VisionColors.TextPrimary
+                        )
+                        Text(
+                            text = "Country: ${exitIpInfo.formattedCountry}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = VisionColors.EmeraldConnected
+                        )
+                    }
+                    exitIpInfo.status == ExitIpStatus.STALE -> {
+                        Text(
+                            text = "IP: ${exitIpInfo.ip ?: "—"} (Stale — reconnecting)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = VisionColors.AmberWarning
+                        )
+                        Text(
+                            text = "Country: ${exitIpInfo.formattedCountry}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = VisionColors.AmberWarning
+                        )
+                    }
+                    else -> {
+                        Text(
+                            text = "IP: Unavailable  •  Country: Unknown",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = VisionColors.AmberWarning
+                        )
+                    }
+                }
+            }
+            if (isConnected) {
+                IconButton(
+                    onClick = onRefresh,
+                    enabled = exitIpInfo.status != ExitIpStatus.LOADING
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Refresh,
+                        contentDescription = "Refresh Exit IP",
+                        tint = VisionColors.CyanHighlight
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SelectorGroupHeader(
+    title: String,
+    count: Int,
+    collapsed: Boolean,
+    onToggle: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(VisionColors.CardSurfaceElevated.copy(alpha = 0.65f))
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = if (collapsed) Icons.Rounded.ExpandMore else Icons.Rounded.ExpandLess,
+            contentDescription = null,
+            tint = VisionColors.CyanHighlight,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelLarge,
+            color = VisionColors.CyanHighlight,
+            modifier = Modifier.weight(1f),
+            maxLines = 1
+        )
+        Text(
+            text = "$count",
+            style = MaterialTheme.typography.labelSmall,
+            color = VisionColors.TextSecondary
+        )
+    }
+}
+
+@Composable
+private fun BuiltInSelectorRow(
+    engine: SelectableProfile.BuiltInEngine,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    GlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        borderColor = if (selected) VisionColors.ElectricBlue else VisionColors.CardBorder,
+        onClick = onClick
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = engine.displayName, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                Text(text = engine.subtitle, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                Text(
+                    text = engine.statusNote,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (engine.isReady) VisionColors.EmeraldConnected else VisionColors.AmberWarning,
+                    maxLines = 1
+                )
+            }
+            ProtocolBadge("LOCAL")
+            if (selected) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Icon(
+                    imageVector = Icons.Rounded.CheckCircle,
+                    contentDescription = null,
+                    tint = VisionColors.EmeraldConnected,
+                    modifier = Modifier.size(20.dp)
+                )
             }
         }
     }

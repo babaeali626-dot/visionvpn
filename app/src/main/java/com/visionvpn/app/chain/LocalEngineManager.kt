@@ -4,17 +4,20 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -25,6 +28,7 @@ class LocalEngineManager(
 
     private val mutex = Mutex()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val startingEngines = LinkedHashMap<String, LocalEngine>()
     private val activeEngines = LinkedHashMap<String, LocalEngine>()
     private val collectorJobs = mutableMapOf<String, Job>()
     private var watchdogJob: Job? = null
@@ -34,52 +38,124 @@ class LocalEngineManager(
 
     suspend fun startEngine(engine: LocalEngine, readyTimeoutMs: Long = 45_000L): Result<Unit> =
         mutex.withLock {
+            collectorJobs[engine.engineId]?.cancel()
+            // Do not drop ownership before an old process is confirmed stopped. If stop() fails,
+            // the old engine remains tracked so a later Disconnect can retry cleanup.
+            startingEngines[engine.engineId]?.let { old ->
+                withContext(NonCancellable) { old.stop() }
+                startingEngines.remove(engine.engineId)
+            }
+            activeEngines[engine.engineId]?.let { old ->
+                withContext(NonCancellable) { old.stop() }
+                activeEngines.remove(engine.engineId)
+            }
             collectorJobs.remove(engine.engineId)?.cancel()
-            activeEngines.remove(engine.engineId)?.stop()
 
+            // Track engine BEFORE launching so cancellation/failure during startup is always cleaned up
+            startingEngines[engine.engineId] = engine
             collectorJobs[engine.engineId] = scope.launch {
                 engine.state.collect { st -> updateState(st) }
             }
 
-            val launchResult = engine.start()
-            if (launchResult.isFailure) {
-                engine.stop()
-                collectorJobs.remove(engine.engineId)?.cancel()
-                val err = launchResult.exceptionOrNull()
-                    ?: IllegalStateException("Failed to launch ${engine.engineId}")
-                updateState(
-                    LocalEngineState(
-                        engineId = engine.engineId,
-                        status = LocalEngineStatus.FAILED,
-                        phaseLabel = "Failed",
-                        message = err.message.orEmpty()
+            try {
+                val launchResult = engine.start()
+                if (launchResult.isFailure) {
+                    val cleanupConfirmed = cleanupStartingEngineLocked(engine)
+                    val err = launchResult.exceptionOrNull()
+                        ?: IllegalStateException("Failed to launch ${engine.engineId}")
+                    if (!cleanupConfirmed) {
+                        val cleanupError = IllegalStateException(
+                            "${engine.engineId} launch failed and the child process could not be confirmed stopped; ownership retained for retry.",
+                            err
+                        )
+                        updateState(
+                            engine.state.value.copy(
+                                status = LocalEngineStatus.FAILED,
+                                phaseLabel = "Cleanup Required",
+                                message = cleanupError.message.orEmpty()
+                            )
+                        )
+                        return Result.failure(cleanupError)
+                    }
+                    updateState(
+                        LocalEngineState(
+                            engineId = engine.engineId,
+                            status = LocalEngineStatus.FAILED,
+                            phaseLabel = "Failed",
+                            message = err.message.orEmpty()
+                        )
                     )
-                )
-                return Result.failure(err)
-            }
-
-            val healthy = awaitEngineReadiness(engine, readyTimeoutMs)
-            if (!healthy) {
-                val failureMsg = engine.state.value.message.ifBlank {
-                    "${engine.engineId} timed out waiting for tunnel readiness"
+                    return Result.failure(err)
                 }
-                engine.stop()
-                collectorJobs.remove(engine.engineId)?.cancel()
-                updateState(
-                    LocalEngineState(
-                        engineId = engine.engineId,
-                        status = LocalEngineStatus.FAILED,
-                        phaseLabel = "Connection Failed",
-                        message = failureMsg
-                    )
-                )
-                return Result.failure(IllegalStateException(failureMsg))
-            }
 
-            activeEngines[engine.engineId] = engine
-            ensureWatchdogRunning()
-            Result.success(Unit)
+                val healthy = awaitEngineReadiness(engine, readyTimeoutMs)
+                if (!healthy) {
+                    val failureMsg = engine.state.value.message.ifBlank {
+                        "${engine.engineId} timed out waiting for tunnel readiness"
+                    }
+                    val cleanupConfirmed = cleanupStartingEngineLocked(engine)
+                    val failure = if (cleanupConfirmed) {
+                        IllegalStateException(failureMsg)
+                    } else {
+                        IllegalStateException(
+                            "$failureMsg Engine cleanup could not be confirmed; ownership retained for retry."
+                        )
+                    }
+                    updateState(
+                        engine.state.value.copy(
+                            status = LocalEngineStatus.FAILED,
+                            phaseLabel = if (cleanupConfirmed) "Connection Failed" else "Cleanup Required",
+                            message = failure.message.orEmpty()
+                        )
+                    )
+                    return Result.failure(failure)
+                }
+
+                startingEngines.remove(engine.engineId)
+                activeEngines[engine.engineId] = engine
+                ensureWatchdogRunning()
+                Result.success(Unit)
+            } catch (ce: CancellationException) {
+                withContext(NonCancellable) {
+                    val cleanupConfirmed = cleanupStartingEngineLocked(engine)
+                    if (cleanupConfirmed) {
+                        updateState(
+                            LocalEngineState(
+                                engineId = engine.engineId,
+                                status = LocalEngineStatus.STOPPED,
+                                phaseLabel = "Cancelled",
+                                message = "Startup cancelled"
+                            )
+                        )
+                    }
+                    // If cleanup failed, cleanupStartingEngineLocked already published FAILED /
+                    // Cleanup Required. Never overwrite that state with a false STOPPED result.
+                }
+                throw ce
+            }
         }
+
+    private suspend fun cleanupStartingEngineLocked(engine: LocalEngine): Boolean {
+        collectorJobs.remove(engine.engineId)?.cancel()
+        return try {
+            withContext(NonCancellable) { engine.stop() }
+            startingEngines.remove(engine.engineId)
+            activeEngines.remove(engine.engineId)
+            true
+        } catch (t: Throwable) {
+            // Keep the engine in startingEngines so explicit Disconnect can retry. Never report
+            // STOPPED when a native child process may still be alive.
+            startingEngines[engine.engineId] = engine
+            updateState(
+                engine.state.value.copy(
+                    status = LocalEngineStatus.FAILED,
+                    phaseLabel = "Cleanup Required",
+                    message = "Startup failed and engine cleanup could not be confirmed: ${t.message.orEmpty()}"
+                )
+            )
+            false
+        }
+    }
 
     suspend fun stopAll() = mutex.withLock {
         watchdogJob?.cancel()
@@ -87,25 +163,50 @@ class LocalEngineManager(
         collectorJobs.values.forEach { it.cancel() }
         collectorJobs.clear()
 
-        val snapshot = activeEngines.values.toList().reversed()
-        activeEngines.clear()
+        // Stop downstream engines before upstream engines, including any still-starting engines.
+        // Keep failed engines in the ownership maps so a subsequent Disconnect can retry them.
+        val combined = LinkedHashMap<String, LocalEngine>()
+        combined.putAll(activeEngines)
+        combined.putAll(startingEngines)
+        val snapshot = combined.values.toList().reversed()
+        val failures = mutableListOf<Pair<String, Throwable>>()
+
         snapshot.forEach { engine ->
             updateState(engine.state.value.copy(status = LocalEngineStatus.STOPPING, phaseLabel = "Stopping"))
             try {
-                engine.stop()
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (_: Throwable) {
-                // Best-effort cleanup of remaining engines
-            }
-            updateState(
-                LocalEngineState(
-                    engineId = engine.engineId,
-                    status = LocalEngineStatus.STOPPED,
-                    phaseLabel = "Stopped",
-                    message = "Stopped"
+                withContext(NonCancellable) { engine.stop() }
+                activeEngines.remove(engine.engineId)
+                startingEngines.remove(engine.engineId)
+                updateState(
+                    LocalEngineState(
+                        engineId = engine.engineId,
+                        status = LocalEngineStatus.STOPPED,
+                        phaseLabel = "Stopped",
+                        message = "Stopped"
+                    )
                 )
+            } catch (t: Throwable) {
+                if (!activeEngines.containsKey(engine.engineId) && !startingEngines.containsKey(engine.engineId)) {
+                    // Preserve ownership of an engine that was still in the startup map snapshot.
+                    startingEngines[engine.engineId] = engine
+                }
+                failures += engine.engineId to t
+                updateState(
+                    engine.state.value.copy(
+                        status = LocalEngineStatus.FAILED,
+                        phaseLabel = "Cleanup Required",
+                        message = "Could not confirm engine shutdown: ${t.message.orEmpty()}"
+                    )
+                )
+            }
+        }
+
+        if (failures.isNotEmpty()) {
+            val root = IllegalStateException(
+                "Could not confirm shutdown of local engine(s): ${failures.joinToString { it.first }}"
             )
+            failures.forEach { (_, cause) -> root.addSuppressed(cause) }
+            throw root
         }
     }
 

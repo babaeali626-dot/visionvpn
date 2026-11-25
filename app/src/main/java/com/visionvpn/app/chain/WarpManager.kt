@@ -3,6 +3,7 @@ package com.visionvpn.app.chain
 import android.util.Base64
 import com.visionvpn.app.core.crypto.X25519KeyGen
 import com.visionvpn.app.data.model.WarpAccountConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -44,7 +45,7 @@ class WarpManager(
         existingEndpointHost: String = DEFAULT_ENDPOINT_HOST,
         existingEndpointPort: Int = DEFAULT_ENDPOINT_PORT
     ): Result<WarpAccountConfig> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             val keyPair = X25519KeyGen.generateKeyPair()
             val timestamp = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
 
@@ -78,7 +79,11 @@ class WarpManager(
                     fallbackHost = existingEndpointHost,
                     fallbackPort = existingEndpointPort
                 )
-            }
+            }.let { Result.success(it) }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 

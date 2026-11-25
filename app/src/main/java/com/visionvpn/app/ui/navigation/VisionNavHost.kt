@@ -120,6 +120,8 @@ fun VisionAppScaffold(
                         telemetryState = telemetryState,
                         onToggleConnection = onRequestVpnConnect,
                         onSelectProfile = viewModel::selectProfile,
+                        onSelectBuiltInProfile = viewModel::selectBuiltInProfile,
+                        onRefreshExitIp = viewModel::refreshExitIp,
                         onOpenChainManager = { navigateToTab(VisionTab.CHAIN) },
                         onOpenProfiles = { navigateToTab(VisionTab.PROFILES) }
                     )
@@ -128,6 +130,7 @@ fun VisionAppScaffold(
                     ProfilesScreen(
                         uiState = uiState,
                         onSelectProfile = viewModel::selectProfile,
+                        onSelectBuiltInProfile = viewModel::selectBuiltInProfile,
                         onImportRaw = viewModel::importFromRawText,
                         onImportSubscription = viewModel::importSubscription,
                         onRefreshSubscription = viewModel::refreshSubscription,
@@ -139,7 +142,8 @@ fun VisionAppScaffold(
                         onCancelLatencyTests = viewModel::cancelLatencyTests,
                         onSelectExitProvider = viewModel::setExitProvider,
                         onSelectTorBridgeMode = viewModel::setTorBridgeMode,
-                        onAddTorBridges = viewModel::addTorBridgesFromText
+                        onAddTorBridges = viewModel::addTorBridgesFromText,
+                        onSetProfileAllowInsecure = viewModel::setProfileAllowInsecure
                     )
                 }
                 composable(VisionTab.CHAIN.route) {
@@ -158,8 +162,8 @@ fun VisionAppScaffold(
                         onSelectExitProvider = viewModel::setExitProvider,
                         onSetUseEntryProxy = viewModel::setUseEntryProxy,
                         onSelectPsiphonRegion = viewModel::setPsiphonRegion,
-                        onUpdatePsiphonProvisioning = { ch, sp, entries ->
-                            viewModel.updatePsiphonProvisioning(ch, sp, entries)
+                        onUpdatePsiphonProvisioning = { ver, ch, sp, entries, pubKey, urls ->
+                            viewModel.updatePsiphonProvisioning(ver, ch, sp, entries, pubKey, urls)
                         },
                         onSetTorBridgesEnabled = viewModel::setTorBridgesEnabled,
                         onSelectTorBridgeMode = viewModel::setTorBridgeMode,

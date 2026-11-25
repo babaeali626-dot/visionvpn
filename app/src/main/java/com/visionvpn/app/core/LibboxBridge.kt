@@ -11,7 +11,6 @@ import android.util.Log
 import com.visionvpn.app.BuildConfig
 import com.visionvpn.app.data.model.AppSettings
 import com.visionvpn.app.data.model.SplitTunnelMode
-import java.io.File
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.net.InetSocketAddress
@@ -19,7 +18,6 @@ import java.net.NetworkInterface
 import java.security.KeyStore
 import java.security.cert.X509Certificate
 import java.util.Base64
-import java.util.concurrent.atomic.AtomicBoolean
 
 class LibboxBridge(private val context: Context) {
 
@@ -27,17 +25,69 @@ class LibboxBridge(private val context: Context) {
         private const val TAG = "LibboxBridge"
         const val SUPPORTED_SING_BOX_VERSION = BuildConfig.SING_BOX_PINNED_VERSION
         private const val LIBBOX_CLASS = "io.nekohasekai.libbox.Libbox"
-        private const val SETUP_OPTIONS_CLASS = "io.nekohasekai.libbox.SetupOptions"
         private const val PLATFORM_INTERFACE_CLASS = "io.nekohasekai.libbox.PlatformInterface"
         private const val STRING_ITERATOR_CLASS = "io.nekohasekai.libbox.StringIterator"
         private const val NETWORK_INTERFACE_CLASS = "io.nekohasekai.libbox.NetworkInterface"
         private const val NETWORK_INTERFACE_ITERATOR_CLASS = "io.nekohasekai.libbox.NetworkInterfaceIterator"
+
+        /**
+         * Result of validating per-app split-tunnel configuration before calling `VpnService.Builder.establish()`.
+         */
+        data class SplitTunnelPlan(
+            val allowedPackages: List<String> = emptyList(),
+            val disallowedPackages: List<String> = emptyList()
+        )
+
+        /**
+         * Validates and resolves the exact Android `VpnService.Builder` allow/disallow package lists.
+         *
+         * - [SplitTunnelMode.DISABLED]: disallows [selfPackageName] so Sing-box and child local
+         *   engines (`libtor.so`, `libpsiphon.so`, which inherit the app UID) never loop into `tun0`.
+         * - [SplitTunnelMode.BYPASS_SELECTED]: disallows [selfPackageName] plus valid external packages.
+         * - [SplitTunnelMode.ONLY_SELECTED]: deduplicates, removes [selfPackageName], and verifies
+         *   installed packages (when [installedPackages] is provided). FAILS CLOSED if zero valid
+         *   external packages remain instead of falling back to `addDisallowedApplication` (which
+         *   on Android would silently widen the tunnel to all other apps).
+         */
+        fun resolveSplitTunnelPlan(
+            mode: SplitTunnelMode,
+            configuredPackages: Set<String>,
+            selfPackageName: String,
+            installedPackages: Set<String>? = null
+        ): Result<SplitTunnelPlan> = runCatching {
+            val cleaned = configuredPackages
+                .asSequence()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && it != selfPackageName }
+                .distinct()
+                .filter { pkg -> installedPackages == null || pkg in installedPackages }
+                .toList()
+
+            when (mode) {
+                SplitTunnelMode.DISABLED -> SplitTunnelPlan(
+                    disallowedPackages = listOf(selfPackageName)
+                )
+                SplitTunnelMode.BYPASS_SELECTED -> SplitTunnelPlan(
+                    disallowedPackages = (listOf(selfPackageName) + cleaned).distinct()
+                )
+                SplitTunnelMode.ONLY_SELECTED -> {
+                    require(cleaned.isNotEmpty()) {
+                        "Only Selected split-tunnel mode requires at least one valid installed external app. " +
+                            "Select an app in Settings or switch Split Tunneling to Off/Bypass."
+                    }
+                    SplitTunnelPlan(allowedPackages = cleaned)
+                }
+            }
+        }
+
     }
 
     private val lock = Any()
-    private val initialized = AtomicBoolean(false)
     private var activeService: Any? = null
+    private var activeLeaseToken: Long? = null
     private var activeTunFd: ParcelFileDescriptor? = null
+    /** Old descriptors retained during a successful Android VPN-interface handover until closed. */
+    private val retiredTunFds = mutableListOf<ParcelFileDescriptor>()
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     @Volatile
@@ -49,14 +99,20 @@ class LibboxBridge(private val context: Context) {
         settings: AppSettings
     ): Result<Unit> = runCatching {
         synchronized(lock) {
-            stopCoreLocked()
+            check(LibboxRuntime.currentMode() == LibboxLeaseMode.IDLE) {
+                "Libbox runtime is quarantined or still owns a protected tunnel. Explicitly Disconnect before reconnecting."
+            }
+            stopCoreLocked().getOrThrow()
+            val leaseToken = LibboxRuntime.tryAcquireVpnLease()
+                ?: error("Cannot start VPN core while another Libbox operation (such as latency testing) is active.")
+            activeLeaseToken = leaseToken
             try {
                 val libboxClass = runCatching { Class.forName(LIBBOX_CLASS) }.getOrElse {
                     error("Sing-box native library (libbox.aar v$SUPPORTED_SING_BOX_VERSION) is not bundled in app/libs/.")
                 }
                 val platformInterfaceClass = Class.forName(PLATFORM_INTERFACE_CLASS)
                 validatePlatformContract(libboxClass, platformInterfaceClass)
-                ensureSetup(libboxClass)
+                LibboxRuntime.ensureInitialized(context, libboxClass)
 
                 val platformProxy = Proxy.newProxyInstance(
                     platformInterfaceClass.classLoader,
@@ -73,36 +129,201 @@ class LibboxBridge(private val context: Context) {
                 val boxService = newServiceMethod.invoke(null, configJson, platformProxy)
                     ?: error("Libbox.newService returned null for Sing-box v$SUPPORTED_SING_BOX_VERSION")
 
-                boxService.javaClass.getMethod("start").invoke(boxService)
+                // Register ownership BEFORE invoking native start(). If start() throws after the
+                // native object was created, stopCoreLocked() must still close that exact object
+                // or quarantine the lease instead of releasing a possibly live native service.
                 activeService = boxService
+                boxService.javaClass.getMethod("start").invoke(boxService)
+                check(LibboxRuntime.markVpnLeaseActive(leaseToken)) {
+                    "Unable to promote the current Libbox VPN lease to ACTIVE."
+                }
                 Log.i(TAG, "Sing-box libbox v$SUPPORTED_SING_BOX_VERSION started")
             } catch (t: Throwable) {
-                stopCoreLocked()
+                val tunWasEstablished = activeTunFd?.let { !it.isClosed } == true
+                if (settings.failClosedMode && tunWasEstablished) {
+                    // Libbox.start() can fail after its PlatformInterface.openTun() callback has
+                    // already established Android's TUN. Never let the generic start-error path
+                    // close that interface before Controller can react. Try an atomic blackhole
+                    // handover here; if establish() fails, enterFailClosedBlackhole() quarantines
+                    // the runtime but leaves the previous TUN/service owned for explicit cleanup.
+                    if (LibboxRuntime.currentMode() == LibboxLeaseMode.VPN_STARTING) {
+                        LibboxRuntime.markVpnLeaseActive(leaseToken)
+                    }
+                    if (LibboxRuntime.currentMode() == LibboxLeaseMode.VPN_ACTIVE) {
+                        val handover = enterFailClosedBlackhole(vpnService, settings)
+                        handover.exceptionOrNull()?.let(t::addSuppressed)
+                    } else {
+                        LibboxRuntime.markFaulted(
+                            leaseToken,
+                            blockingTunIsInstalled = LibboxRuntime.isBlockingTunInstalled()
+                        )
+                    }
+                } else {
+                    // No Android TUN was established, so there is no protected interface to
+                    // preserve. Close any created native object and release only on confirmed cleanup.
+                    stopCoreLocked().exceptionOrNull()?.let(t::addSuppressed)
+                }
                 throw t
             }
         }
     }
 
-    fun stopCore() {
+    /** True while the bridge still owns an open Android VPN descriptor (normal or blocking). */
+    fun hasOpenTunInterface(): Boolean = synchronized(lock) {
+        activeTunFd?.let { !it.isClosed } == true
+    }
+
+    /**
+     * Atomically hands over the existing VPN interface to a non-forwarding blackhole TUN.
+     * Android documents that a newly established interface deactivates the old interface only
+     * after the new interface has been created successfully; if establish() fails, the old
+     * interface and descriptor remain untouched. Therefore the old Libbox core/TUN are NOT
+     * stopped before establish().
+     */
+    fun enterFailClosedBlackhole(
+        vpnService: VpnService,
+        settings: AppSettings
+    ): Result<Unit> = runCatching {
         synchronized(lock) {
-            stopCoreLocked()
+            val token = activeLeaseToken
+                ?: error("Cannot enter Fail-Closed mode without an active VPN lease.")
+            check(LibboxRuntime.beginBlackholeTransition(token)) {
+                "The current VPN lease is not eligible for a blackhole handover."
+            }
+
+            // Fail-Closed is an emergency override: deliberately do NOT copy the user's
+            // split-tunnel allow/disallow list here. The replacement interface captures every
+            // package (including VisionVPN's own UID) and has no forwarding engine, so neither
+            // a configured bypass app nor an app-owned socket can fall through to the physical
+            // network while the protected state is active. Explicit Disconnect restores normal
+            // routing and the user's split-tunnel preference remains unchanged in storage.
+            val replacementPfd = try {
+                val builder = vpnService.Builder()
+                    .setSession("VisionVPN (Fail-Closed Lockdown)")
+                    .setMtu(settings.mtu.coerceIn(1280, 9000))
+                    .addAddress("172.19.0.1", 30)
+                    .addAddress("fdfe:dcba:9876::1", 126)
+                    .addRoute("0.0.0.0", 0)
+                    .addRoute("::", 0)
+                    .addDnsServer("172.19.0.2")
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
+                // No addAllowedApplication()/addDisallowedApplication(): capture all UIDs.
+                builder.establish()
+                    ?: error("Unable to establish Fail-Closed blocking TUN; the previous VPN interface was retained.")
+            } catch (t: Throwable) {
+                LibboxRuntime.markFaulted(token, blockingTunIsInstalled = false)
+                throw t
+            }
+
+            // The system has switched routing to the new descriptor at this point. Keep it in
+            // activeTunFd BEFORE closing the old service so a cleanup error cannot release it.
+            val previousPfd = activeTunFd
+            activeTunFd = replacementPfd
+            if (previousPfd != null && previousPfd !== replacementPfd) {
+                retiredTunFds += previousPfd
+            }
+            check(LibboxRuntime.markBlackholeActive(token)) {
+                LibboxRuntime.markFaulted(token, blockingTunIsInstalled = true)
+                "Blocking TUN was established, but the Libbox lease transition failed."
+            }
+
+            // Close the old native forwarder only AFTER Android has installed the replacement.
+            val oldService = activeService
+            if (oldService != null) {
+                try {
+                    oldService.javaClass.getMethod("close").invoke(oldService)
+                    activeService = null
+                } catch (t: Throwable) {
+                    // The new blocking TUN is already active. Keep the owner lease quarantined and
+                    // retain the service reference so an explicit Disconnect can retry cleanup.
+                    LibboxRuntime.markFaulted(token, blockingTunIsInstalled = true)
+                    Log.e(TAG, "Blackhole TUN active; native service close will require retry", t)
+                    return@synchronized Unit
+                }
+            }
+
+            val closeFailures = mutableListOf<Throwable>()
+            val oldDescriptors = retiredTunFds.toList()
+            for (oldFd in oldDescriptors) {
+                try {
+                    closeTunDescriptor(oldFd)
+                    retiredTunFds.remove(oldFd)
+                } catch (t: Throwable) {
+                    closeFailures += t
+                }
+            }
+            if (closeFailures.isNotEmpty()) {
+                LibboxRuntime.markFaulted(token, blockingTunIsInstalled = true)
+                Log.e(TAG, "Blackhole TUN active; ${closeFailures.size} old descriptor(s) could not be closed")
+            }
+            Log.w(TAG, "Entered Fail-Closed blocking TUN state until user disconnects")
         }
     }
 
-    private fun stopCoreLocked() {
+    fun stopCore(): Result<Unit> = synchronized(lock) { stopCoreLocked() }
+
+    /**
+     * Close the service first, then all active/retired TUN descriptors, and release the lease
+     * ONLY after every close has succeeded. Any failure leaves the lease quarantined.
+     */
+    private fun stopCoreLocked(): Result<Unit> {
         unregisterDefaultInterfaceMonitor()
-
-        activeService?.let { svc ->
-            runCatching { svc.javaClass.getMethod("close").invoke(svc) }
-                .onFailure { Log.w(TAG, "Libbox close error: ${it.message}") }
+        val token = activeLeaseToken
+        try {
+            activeService?.let { svc ->
+                svc.javaClass.getMethod("close").invoke(svc)
+            }
+            activeService = null
+        } catch (t: Throwable) {
+            token?.let { LibboxRuntime.markFaulted(it, LibboxRuntime.isBlockingTunInstalled()) }
+            return Result.failure(
+                LibboxCleanupException("Libbox native service could not be confirmed closed; its runtime lease was retained.", t)
+            )
         }
-        activeService = null
 
-        activeTunFd?.let { pfd ->
-            runCatching { pfd.close() }
-                .onFailure { Log.w(TAG, "TUN close error: ${it.message}") }
+        val descriptors = buildList {
+            activeTunFd?.let(::add)
+            addAll(retiredTunFds)
+        }.distinct()
+        for (fd in descriptors) {
+            try {
+                closeTunDescriptor(fd)
+                if (fd === activeTunFd) {
+                    activeTunFd = null
+                    token?.let { LibboxRuntime.clearBlockingTun(it) }
+                }
+                retiredTunFds.remove(fd)
+            } catch (t: Throwable) {
+                token?.let { LibboxRuntime.markFaulted(it, LibboxRuntime.isBlockingTunInstalled()) }
+                return Result.failure(
+                    LibboxCleanupException("A VPN TUN descriptor could not be confirmed closed; its runtime lease was retained.", t)
+                )
+            }
         }
-        activeTunFd = null
+
+        if (token != null && !LibboxRuntime.releaseVpnLease(token)) {
+            LibboxRuntime.markFaulted(token, blockingTunIsInstalled = false)
+            return Result.failure(LibboxCleanupException("Libbox lease ownership changed before cleanup completed."))
+        }
+        activeLeaseToken = null
+        return Result.success(Unit)
+    }
+
+    /** Native Libbox may close the raw fd it received from openTun(); accept EBADF as already closed. */
+    private fun closeTunDescriptor(pfd: ParcelFileDescriptor) {
+        if (pfd.isClosed) return
+        try {
+            pfd.close()
+        } catch (t: Throwable) {
+            val message = generateSequence(t) { it.cause }
+                .mapNotNull { it.message }
+                .joinToString(" ")
+                .lowercase()
+            val alreadyClosed = message.contains("bad file descriptor") ||
+                message.contains("ebadf") || message.contains("errno 9")
+            if (!alreadyClosed) throw t
+        }
     }
 
     private fun validatePlatformContract(
@@ -159,22 +380,6 @@ class LibboxBridge(private val context: Context) {
         requireExact("uidByPackageName", listOf(String::class.java), Int::class.javaPrimitiveType)
     }
 
-    private fun ensureSetup(libboxClass: Class<*>) {
-        if (initialized.get()) return
-        val baseDir = File(context.filesDir, "singbox").apply { mkdirs() }
-        val workDir = File(baseDir, "work").apply { mkdirs() }
-        val tempDir = File(context.cacheDir, "singbox_tmp").apply { mkdirs() }
-
-        val optionsClass = Class.forName(SETUP_OPTIONS_CLASS)
-        val options = optionsClass.getDeclaredConstructor().newInstance()
-        optionsClass.getMethod("setBasePath", String::class.java).invoke(options, baseDir.absolutePath)
-        optionsClass.getMethod("setWorkingPath", String::class.java).invoke(options, workDir.absolutePath)
-        optionsClass.getMethod("setTempPath", String::class.java).invoke(options, tempDir.absolutePath)
-        libboxClass.getMethod("setup", optionsClass).invoke(null, options)
-
-        initialized.set(true)
-    }
-
     private fun handlePlatformCall(
         method: Method,
         args: Array<out Any?>?,
@@ -219,7 +424,7 @@ class LibboxBridge(private val context: Context) {
         "writeLog" -> {
             val msg = args?.firstOrNull() as? String
             if (!msg.isNullOrBlank()) {
-                Log.d(TAG, "[sing-box] ${redactSensitiveLog(msg)}")
+                Log.d(TAG, "[sing-box] ${LogRedactor.redact(msg)}")
             }
             null
         }
@@ -388,6 +593,10 @@ class LibboxBridge(private val context: Context) {
     /**
      * Consumes incoming Sing-box v1.10.7 `TunOptions` (`getMTU`, `getInet4Address`,
      * `getInet6Address`, `getDNSServerAddress`) and applies them to `VpnService.Builder`.
+     *
+     * Always excludes `context.packageName` (this app's UID, which is also inherited by child
+     * processes `libtor.so` and `libpsiphon.so`) from TUN capture so upstream engine sockets
+     * never loop back into `tun0`.
      */
     private fun openAndroidTun(vpnService: VpnService, settings: AppSettings, tunOptions: Any?): Int {
         val mtuFromOptions = runCatching {
@@ -426,23 +635,21 @@ class LibboxBridge(private val context: Context) {
             builder.setMetered(false)
         }
 
-        when (settings.splitTunnelMode) {
-            SplitTunnelMode.DISABLED -> {
-                runCatching { builder.addDisallowedApplication(context.packageName) }
-            }
-            SplitTunnelMode.BYPASS_SELECTED -> {
-                runCatching { builder.addDisallowedApplication(context.packageName) }
-                settings.splitTunnelPackages.forEach { pkg ->
-                    runCatching { builder.addDisallowedApplication(pkg) }
-                }
-            }
-            SplitTunnelMode.ONLY_SELECTED -> {
-                settings.splitTunnelPackages
-                    .filter { it != context.packageName }
-                    .forEach { pkg ->
-                        runCatching { builder.addAllowedApplication(pkg) }
-                    }
-            }
+        val installedPackages = runCatching {
+            context.packageManager.getInstalledApplications(0).map { it.packageName }.toSet()
+        }.getOrNull()
+        val splitPlan = resolveSplitTunnelPlan(
+            mode = settings.splitTunnelMode,
+            configuredPackages = settings.splitTunnelPackages,
+            selfPackageName = context.packageName,
+            installedPackages = installedPackages
+        ).getOrThrow()
+
+        splitPlan.allowedPackages.forEach { pkg ->
+            builder.addAllowedApplication(pkg)
+        }
+        splitPlan.disallowedPackages.forEach { pkg ->
+            builder.addDisallowedApplication(pkg)
         }
 
         val pfd = builder.establish()
@@ -467,9 +674,5 @@ class LibboxBridge(private val context: Context) {
             }
             result
         }.getOrDefault(emptyList())
-    }
-
-    private fun redactSensitiveLog(raw: String): String {
-        return raw.replace(Regex("(password|uuid|private_key|cert)=([^\\s&,\"]+)"), "$1=<redacted>")
     }
 }

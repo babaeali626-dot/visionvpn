@@ -3,6 +3,8 @@ package com.visionvpn.app.chain
 import android.content.Context
 import com.visionvpn.app.data.model.PsiphonChainConfig
 import com.visionvpn.app.data.model.PsiphonRegionValidation
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -91,7 +93,19 @@ class PsiphonEngine(
     }
 
     override suspend fun start(): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
+            startInternal()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            withContext(NonCancellable) { stop() }
+            throw ce
+        } catch (e: Exception) {
+            withContext(NonCancellable) { stop() }
+            Result.failure(e)
+        }
+    }
+
+    private fun startInternal() {
             val gen = sessionGeneration.incrementAndGet()
             listenerReady = false
             tunnelEstablished = false
@@ -157,7 +171,6 @@ class PsiphonEngine(
                     )
                 }
             }
-        }
     }
 
     internal fun buildPsiphonConfigJson(workDir: File): Result<String> = runCatching {
@@ -273,9 +286,9 @@ class PsiphonEngine(
         val reqLabel = PsiphonChainConfig.findRegionOrNull(config.regionCode)?.nameEn ?: config.regionCode
         val obs = observedRegion
         return if (!obs.isNullOrBlank()) {
-            "Psiphon connected (Reported Exit: $obs)"
+            "Psiphon TLS-verified (Reported Exit: $obs)"
         } else {
-            "Psiphon connected (Requested: $reqLabel)"
+            "Psiphon TLS-verified (Requested: $reqLabel)"
         }
     }
 
@@ -293,7 +306,7 @@ class PsiphonEngine(
 
         val now = System.currentTimeMillis()
         if (now - lastConnectProbeOkMs >= CONNECT_PROBE_CACHE_MS) {
-            val probe = Socks5Probe.verifyConnect(config.localSocksPort)
+            val probe = Socks5Probe.verifyTlsOverSocks5(config.localSocksPort)
             if (probe !is Socks5Probe.ProbeResult.Success) {
                 return@withContext false
             }

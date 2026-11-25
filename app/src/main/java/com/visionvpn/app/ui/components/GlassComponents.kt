@@ -37,12 +37,9 @@ fun VisionBackground(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit
 ) {
-    val top = if (themeVariant == VisionThemeVariant.DEEP_SPACE) {
-        VisionColors.BgOledTop
-    } else VisionColors.BgDeepTop
-    val bottom = if (themeVariant == VisionThemeVariant.DEEP_SPACE) {
-        VisionColors.BgOledBottom
-    } else VisionColors.BgDeepBottom
+    // Fixed to primary Vision UI Dark palette for this release
+    val top = VisionColors.BgDeepTop
+    val bottom = VisionColors.BgDeepBottom
 
     Box(
         modifier = modifier

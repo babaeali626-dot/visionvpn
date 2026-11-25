@@ -4,10 +4,14 @@ import android.content.Context
 import com.visionvpn.app.data.model.ChainConfig
 import com.visionvpn.app.data.model.ChainExitType
 import com.visionvpn.app.data.model.ProxyProfile
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 /**
  * Validates multi-hop routing graphs, ensures Cloudflare WARP registration when needed,
- * and starts/stops local daemon engines (Tor, Psiphon) in strict dependency order.
+ * and starts/stops local daemon engines (Tor, Psiphon) in strict dependency order while
+ * preserving coroutine [CancellationException].
  */
 class ChainManager(
     private val context: Context,
@@ -19,35 +23,66 @@ class ChainManager(
         rawChainConfig: ChainConfig,
         allProfiles: List<ProxyProfile>,
         onWarpConfigUpdated: suspend (ChainConfig) -> Unit
-    ): Result<RoutingGraph> = runCatching {
-        var effectiveConfig = rawChainConfig
-        val hops = effectiveConfig.orderedExitHops()
+    ): Result<RoutingGraph> {
+        return try {
+            var effectiveConfig = rawChainConfig
+            val hops = effectiveConfig.orderedExitHops()
 
-        // Auto-register Cloudflare WARP keys if WARP is in the chain and unregistered
-        if (hops.contains(ChainExitType.CLOUDFLARE_WARP) && !effectiveConfig.warpConfig.isRegistered) {
-            val warpReg = warpManager.registerNewAccount(
-                existingEndpointHost = effectiveConfig.warpConfig.endpointHost,
-                existingEndpointPort = effectiveConfig.warpConfig.endpointPort
-            ).getOrThrow()
-            effectiveConfig = effectiveConfig.copy(warpConfig = warpReg)
-            onWarpConfigUpdated(effectiveConfig)
+            // Auto-register Cloudflare WARP keys if WARP is in the chain and unregistered
+            if (hops.contains(ChainExitType.CLOUDFLARE_WARP) && !effectiveConfig.warpConfig.isRegistered) {
+                val warpReg = warpManager.registerNewAccount(
+                    existingEndpointHost = effectiveConfig.warpConfig.endpointHost,
+                    existingEndpointPort = effectiveConfig.warpConfig.endpointPort
+                ).getOrThrow()
+                effectiveConfig = effectiveConfig.copy(warpConfig = warpReg)
+                onWarpConfigUpdated(effectiveConfig)
+            }
+
+            Result.success(
+                RoutingGraph.build(
+                    entryProfile = entryProfile,
+                    chainConfig = effectiveConfig,
+                    allProfiles = allProfiles
+                ).getOrThrow()
+            )
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Result.failure(e)
         }
-
-        RoutingGraph.build(
-            entryProfile = entryProfile,
-            chainConfig = effectiveConfig,
-            allProfiles = allProfiles
-        ).getOrThrow()
     }
 
     /**
-     * Starts local daemon engines (Tor, Psiphon) in exact sequential graph order,
-     * wiring each engine to its dedicated per-hop loopback upstream port.
-     * Cleans up all previously started engines if any stage fails.
+     * Starts standalone or entry-hop local daemon engines (those without an upstream Sing-box
+     * loopback port) BEFORE Sing-box opens TUN so provisioning/bootstrap failures fail fast.
      */
-    suspend fun startLocalEnginesForGraph(graph: RoutingGraph): Result<Unit> = runCatching {
-        try {
+    suspend fun startPreCoreLocalEngines(graph: RoutingGraph): Result<Unit> {
+        return startMatchingLocalEngines(graph) { node -> node.upstreamLoopbackPort == null }
+    }
+
+    /**
+     * Starts chained local daemon engines (those whose `UpstreamProxyURL` / `Socks5Proxy`
+     * targets a Sing-box `mixed-upstream-N` loopback inbound) AFTER Sing-box is running.
+     */
+    suspend fun startPostCoreLocalEngines(graph: RoutingGraph): Result<Unit> {
+        return startMatchingLocalEngines(graph) { node -> node.upstreamLoopbackPort != null }
+    }
+
+    /**
+     * Starts all local daemon engines in exact sequential graph order.
+     * Cleans up all previously started engines if any stage fails or is cancelled.
+     */
+    suspend fun startLocalEnginesForGraph(graph: RoutingGraph): Result<Unit> {
+        return startMatchingLocalEngines(graph) { true }
+    }
+
+    private suspend fun startMatchingLocalEngines(
+        graph: RoutingGraph,
+        predicate: (RoutingNode) -> Boolean
+    ): Result<Unit> {
+        return try {
             for (node in graph.nodes) {
+                if (!predicate(node)) continue
                 when (node) {
                     is RoutingNode.TorNode -> {
                         val torEngine = TorEngine(
@@ -68,9 +103,13 @@ class ChainManager(
                     else -> Unit
                 }
             }
-        } catch (t: Throwable) {
-            localEngineManager.stopAll()
-            throw t
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            withContext(NonCancellable) { localEngineManager.stopAll() }
+            throw ce
+        } catch (e: Exception) {
+            withContext(NonCancellable) { localEngineManager.stopAll() }
+            Result.failure(e)
         }
     }
 
