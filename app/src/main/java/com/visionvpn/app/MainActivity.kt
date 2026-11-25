@@ -40,7 +40,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             // Observe only language & theme at root so 1s traffic/status ticks never recompose the entire tree
-            val (language, themeVariant) by viewModel.themeLanguageState.collectAsStateWithLifecycle()
+            val (language, themeVariant) = viewModel.themeLanguageState.collectAsStateWithLifecycle().value
             VisionVpnTheme(
                 language = language,
                 themeVariant = themeVariant
