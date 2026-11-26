@@ -30,6 +30,14 @@ data class ExitIpInfo(
     val updatedAtMs: Long = 0L,
     val errorNote: String? = null
 ) {
+    val countryFlag: String
+        get() {
+            val code = countryCode?.uppercase().orEmpty()
+            if (code.length != 2 || code.any { it !in 'A'..'Z' }) return ""
+            return String(Character.toChars(0x1F1E6 + (code[0] - 'A'))) +
+                String(Character.toChars(0x1F1E6 + (code[1] - 'A')))
+        }
+
     val formattedCountry: String
         get() = when {
             !countryName.isNullOrBlank() && !countryCode.isNullOrBlank() -> "$countryName ($countryCode)"
@@ -54,6 +62,7 @@ object ExitIpLookup {
 
     const val PRIMARY_ENDPOINT = "https://api.country.is/"
     const val FALLBACK_ENDPOINT = "https://www.cloudflare.com/cdn-cgi/trace"
+    const val IP_SB_ENDPOINT = "https://api.ip.sb/geoip"
     private const val MAX_BODY_BYTES = 4_096
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -70,9 +79,12 @@ object ExitIpLookup {
         val fallback = queryEndpointThroughProxy(FALLBACK_ENDPOINT, proxyPort, timeoutMs, isJson = false, clockMs = clockMs)
         if (fallback.status == ExitIpStatus.VERIFIED) return@withContext fallback
 
+        val ipSb = queryEndpointThroughProxy(IP_SB_ENDPOINT, proxyPort, timeoutMs, isJson = true, clockMs = clockMs)
+        if (ipSb.status == ExitIpStatus.VERIFIED) return@withContext ipSb
+
         primary.copy(
             status = ExitIpStatus.UNAVAILABLE,
-            errorNote = fallback.errorNote ?: primary.errorNote ?: "Exit IP lookup unavailable through tunnel"
+            errorNote = ipSb.errorNote ?: fallback.errorNote ?: primary.errorNote ?: "Exit IP lookup unavailable through tunnel"
         )
     }
 
@@ -136,7 +148,9 @@ object ExitIpLookup {
         val obj = runCatching { json.parseToJsonElement(rawBody).jsonObject }.getOrNull()
             ?: return ExitIpInfo(status = ExitIpStatus.UNAVAILABLE, errorNote = "Malformed JSON response")
         val ip = obj["ip"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-        val country = obj["country"]?.jsonPrimitive?.contentOrNull?.trim()?.uppercase()
+        val country = (obj["country_code"]?.jsonPrimitive?.contentOrNull
+            ?: obj["countryCode"]?.jsonPrimitive?.contentOrNull
+            ?: obj["country"]?.jsonPrimitive?.contentOrNull)?.trim()?.uppercase()
         return buildValidatedInfo(ip, country, nowMs)
     }
 

@@ -61,7 +61,25 @@ data class AppSettings(
     val failClosedMode: Boolean = true,
     /** HTTPS profile-probe timeout only; native engine startup has a separate timeout. */
     val latencyProbeTimeoutSeconds: Int = 5,
-    val mtu: Int = 9000,
+    val latencyTestUrl: String = "https://www.gstatic.com/generate_204",
+    /** Preserve historical behavior by default; users may retain their imported/manual order. */
+    val autoSortAfterLatencyTest: Boolean = true,
+    /** Sing-box core log verbosity; secrets are still redacted by VisionVPN's log path. */
+    val coreLogLevel: String = "info",
+    /** Parallel HTTPS probes share one headless Libbox instance; never one native runtime per profile. */
+    val latencyProbeConcurrency: Int = 20,
+    /** Manual speed-test payload only; Smart Connect never downloads this payload. */
+    val speedTestDownloadSizeMiB: Int = 1,
+    /** Enable Sing-box v1.10.7 ECH auto-discovery for compatible TLS outbounds. */
+    val echAutoEnabled: Boolean = false,
+    /** Home-screen URLTest group. It is only applied to simple imported-proxy routes. */
+    val smartConnectEnabled: Boolean = false,
+    val smartConnectProfileIds: Set<String> = emptySet(),
+    val smartConnectIntervalSeconds: Int = 60,
+    val smartConnectCandidateCount: Int = 20,
+    val smartConnectToleranceMs: Int = 50,
+    /** Conservative Android VPN MTU; 9000-byte jumbo frames are not portable on mobile paths. */
+    val mtu: Int = 1500,
     val language: AppLanguage = AppLanguage.ENGLISH,
     val themeVariant: VisionThemeVariant = VisionThemeVariant.VISION_NAVY
 ) {
@@ -72,7 +90,7 @@ data class AppSettings(
         get() = VisionThemeVariant.VISION_NAVY
 
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 4
+        const val CURRENT_SCHEMA_VERSION = 5
     }
 }
 

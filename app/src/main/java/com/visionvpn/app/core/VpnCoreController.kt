@@ -331,8 +331,17 @@ class VpnCoreController(
                 _activeExitProvider.value = graph.effectiveFinalExitProvider
                 _activeChainLabels.value = graph.describeChain()
 
+                val smartCandidates = if (settings.smartConnectEnabled) {
+                    require(graph.nodes.size == 1 && graph.nodes.single() is com.visionvpn.app.chain.RoutingNode.ProxyNode) {
+                        "Smart Connect currently requires a single imported proxy route. Disable Smart Connect before using Tor/Psiphon/WARP chain layers."
+                    }
+                    profiles.filter { it.id in settings.smartConnectProfileIds }
+                        .filter { configBuilder.validateProfile(it).isSuccess }
+                        .take(settings.smartConnectCandidateCount.coerceIn(2, 100))
+                        .also { require(it.size >= 2) { "Select at least two valid profiles for Smart Connect." } }
+                } else emptyList()
                 val singBoxJson = try {
-                    configBuilder.buildSingBoxConfig(graph, settings)
+                    configBuilder.buildSingBoxConfig(graph, settings, smartCandidates)
                 } catch (e: Exception) {
                     return failAndCleanup(
                         "[Config] ${LogRedactor.redact(e.message ?: "Failed to build Sing-box configuration")}"

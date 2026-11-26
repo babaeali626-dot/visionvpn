@@ -123,7 +123,9 @@ fun VisionAppScaffold(
                         onSelectBuiltInProfile = viewModel::selectBuiltInProfile,
                         onRefreshExitIp = viewModel::refreshExitIp,
                         onOpenChainManager = { navigateToTab(VisionTab.CHAIN) },
-                        onOpenProfiles = { navigateToTab(VisionTab.PROFILES) }
+                        onOpenProfiles = { navigateToTab(VisionTab.PROFILES) },
+                        onUpdateSettings = viewModel::updateSettings,
+                        onSetSmartConnectEnabled = viewModel::setSmartConnectEnabled
                     )
                 }
                 composable(VisionTab.PROFILES.route) {
@@ -172,7 +174,9 @@ fun VisionAppScaffold(
                         onToggleSavedTorBridge = viewModel::toggleSavedTorBridge,
                         onDeleteSavedTorBridge = viewModel::deleteSavedTorBridge,
                         onClearAllTorBridges = viewModel::clearAllTorBridges,
-                        onReconnectVpn = viewModel::reconnectVpn
+                        onReconnectVpn = viewModel::reconnectVpn,
+                        onRunSpeedTest = viewModel::runCurrentTunnelSpeedTest,
+                        onCancelSpeedTest = viewModel::cancelCurrentTunnelSpeedTest
                     )
                 }
             }

@@ -447,6 +447,9 @@ class StabilitySecurityAndProfilesTest {
         }
 
         val parsed = ExitIpLookup.parseCountryIsJson("""{"ip":"1.1.1.1","country":"DE"}""", nowMs = 5000L)
+        val ipSb = ExitIpLookup.parseCountryIsJson("""{"ip":"1.1.1.1","country":"United States","country_code":"US"}""", nowMs = 5001L)
+        assertEquals("US", ipSb.countryCode)
+        assertEquals("🇺🇸", ipSb.countryFlag)
         assertEquals(ExitIpStatus.VERIFIED, parsed.status)
         assertEquals("Germany", parsed.countryName)
 
@@ -666,4 +669,13 @@ class StabilitySecurityAndProfilesTest {
         assertFalse(redacted.contains("abc123"))
         assertFalse(redacted.contains("11111111-2222-3333-4444-555555555555"))
     }
+    @Test
+    fun `verified exit IP exposes a country flag from ISO country code`() {
+        val us = ExitIpLookup.buildValidatedInfo("1.1.1.1", "US", nowMs = 123L)
+        assertEquals(ExitIpStatus.VERIFIED, us.status)
+        assertEquals("🇺🇸", us.countryFlag)
+        val invalid = ExitIpLookup.buildValidatedInfo("1.1.1.1", "USA", nowMs = 123L)
+        assertEquals("", invalid.countryFlag)
+    }
+
 }

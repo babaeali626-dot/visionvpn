@@ -31,3 +31,7 @@ git remote add origin https://github.com/<YOUR_USERNAME>/VisionVPN.git
 git push -u origin main
 ```
 Open the **Actions** tab on GitHub, select **Build & Test VisionVPN Android APK**, wait for unit tests and builds to finish, and download **VisionVPN-Release-APK** (or **VisionVPN-Debug-APK**) from **Artifacts**.
+
+## Revision 10 corrective patch
+
+The offline Revision 10 source patch and its honest validation boundary are documented in `docs/revision10/IMPLEMENTATION_REPORT.md`. To apply it, extract the source archive over the project root while preserving `.git`; then run the full Android CI build on `test`. No APK was produced by the offline patching environment. Psiphon provider/native-engine blockers, unsupported Hiddify-only transports, and the current Smart Connect chain limitation are documented in the report.

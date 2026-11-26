@@ -17,6 +17,7 @@ import com.visionvpn.app.data.model.SavedTorBridge
 import com.visionvpn.app.data.model.SubscriptionProfileManager
 import com.visionvpn.app.data.model.SubscriptionSource
 import com.visionvpn.app.data.model.TorBridgeMode
+import java.net.URI
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
@@ -39,6 +40,16 @@ enum class StorageMigrationState {
     COMPLETE,
     RECOVERY_REQUIRED,
     FAILED
+}
+
+private fun normalizeLatencyTestUrl(raw: String): String {
+    val normalized = raw.trim()
+    val valid = runCatching { URI(normalized) }.getOrNull()?.let { uri ->
+        uri.scheme.equals("https", ignoreCase = true) &&
+            !uri.host.isNullOrBlank() && uri.userInfo == null &&
+            uri.toString().length <= 512
+    } == true
+    return if (valid) normalized else AppSettings().latencyTestUrl
 }
 
 /**
@@ -110,7 +121,15 @@ class VisionPreferencesRepository(
                 json.decodeFromString<AppSettings>(raw).let { decoded ->
                     decoded.copy(
                         schemaVersion = AppSettings.CURRENT_SCHEMA_VERSION,
-                        latencyProbeTimeoutSeconds = decoded.latencyProbeTimeoutSeconds.coerceIn(1, 30)
+                        latencyProbeTimeoutSeconds = decoded.latencyProbeTimeoutSeconds.coerceIn(1, 30),
+                        latencyTestUrl = normalizeLatencyTestUrl(decoded.latencyTestUrl),
+                        latencyProbeConcurrency = decoded.latencyProbeConcurrency.coerceIn(1, 100),
+                        coreLogLevel = decoded.coreLogLevel.trim().lowercase().takeIf { it in setOf("error", "warn", "info", "debug", "trace") } ?: "info",
+                        speedTestDownloadSizeMiB = decoded.speedTestDownloadSizeMiB.coerceIn(1, 100),
+                        smartConnectIntervalSeconds = decoded.smartConnectIntervalSeconds.coerceIn(15, 3600),
+                        smartConnectCandidateCount = decoded.smartConnectCandidateCount.coerceIn(2, 100),
+                        smartConnectToleranceMs = decoded.smartConnectToleranceMs.coerceIn(1, 500),
+                        mtu = decoded.mtu.coerceIn(1280, 1500)
                     )
                 }
             }
@@ -295,7 +314,16 @@ class VisionPreferencesRepository(
         awaitMigrationBarrier()
         val normalized = settings.copy(
             schemaVersion = AppSettings.CURRENT_SCHEMA_VERSION,
-            latencyProbeTimeoutSeconds = settings.latencyProbeTimeoutSeconds.coerceIn(1, 30)
+            latencyProbeTimeoutSeconds = settings.latencyProbeTimeoutSeconds.coerceIn(1, 30),
+            latencyTestUrl = normalizeLatencyTestUrl(settings.latencyTestUrl),
+            latencyProbeConcurrency = settings.latencyProbeConcurrency.coerceIn(1, 100),
+            coreLogLevel = settings.coreLogLevel.trim().lowercase().takeIf { it in setOf("error", "warn", "info", "debug", "trace") } ?: "info",
+            speedTestDownloadSizeMiB = settings.speedTestDownloadSizeMiB.coerceIn(1, 100),
+            smartConnectIntervalSeconds = settings.smartConnectIntervalSeconds.coerceIn(15, 3600),
+            smartConnectCandidateCount = settings.smartConnectCandidateCount.coerceIn(2, 100),
+            smartConnectToleranceMs = settings.smartConnectToleranceMs.coerceIn(1, 500),
+            smartConnectProfileIds = settings.smartConnectProfileIds.filter { it.isNotBlank() }.toSet(),
+            mtu = settings.mtu.coerceIn(1280, 1500)
         )
         context.visionDataStore.edit { prefs ->
             prefs[Keys.APP_SETTINGS] = json.encodeToString(normalized)

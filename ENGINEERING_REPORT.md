@@ -70,3 +70,11 @@ No full Gradle build, project JUnit execution, GitHub Actions push, or Android d
 - `IpAddressClassifier` conservatively requires IPv6 Global Unicast or an explicit IANA global-reachability exception, and the well-known NAT64 prefix is accepted only when its embedded IPv4 is globally reachable.
 
 These changes are source-level fixes. Do not interpret them as evidence that Android's actual packet-routing, native Libbox close behavior, or seamless TUN handover has been verified on a device.
+
+---
+
+## Revision 10 corrective source patch (offline)
+
+A subsequent offline source patch is included in `docs/revision10/IMPLEMENTATION_REPORT.md`. It removes the Profiles-screen disposal cancellation, introduces a shared-Libbox concurrent HTTPS profile-test path, configurable timeout/concurrency/manual speed-test size, Smart Connect via the pinned Sing-box URLTest group for simple imported-proxy routes, an `api.ip.sb/geoip` exit-IP fallback, ECH Auto, core log level, and a mobile-safe 1500 MTU default. The patch passed `git diff --check`, all 10 Android XML files parsed, and 16/16 alignment-script unit tests.
+
+The Android build, project JUnit, APK, CI, and device traffic tests remain unverified because the supplied offline snapshot lacks the Gradle wrapper JAR and `libbox.aar`, and the local environment has no installed Gradle or Android SDK. Hiddify's native Psiphon/edge-scanner integration, separate Proxy Unblocker role, full two-role chain model, real WARP provisioning and Hiddify-only TLS fragmentation/Finalmask are not claimed as implemented. See the Revision 10 report for exact blockers and scope.

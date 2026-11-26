@@ -31,6 +31,8 @@ import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -40,6 +42,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -54,6 +58,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.visionvpn.app.core.ExitIpStatus
+import com.visionvpn.app.data.model.AppSettings
 import com.visionvpn.app.data.model.BuiltInProfilesCatalog
 import com.visionvpn.app.data.model.ChainExitType
 import com.visionvpn.app.data.model.LocalEngineProfileType
@@ -83,9 +88,12 @@ fun HomeScreen(
     onSelectBuiltInProfile: (LocalEngineProfileType) -> Unit,
     onRefreshExitIp: () -> Unit,
     onOpenChainManager: () -> Unit,
-    onOpenProfiles: () -> Unit
+    onOpenProfiles: () -> Unit,
+    onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit,
+    onSetSmartConnectEnabled: (Boolean) -> Unit
 ) {
     var showProfileSheet by remember { mutableStateOf(false) }
+    var showSmartConnectProfiles by remember { mutableStateOf(false) }
 
     var elapsedSeconds by remember { mutableLongStateOf(0L) }
     LaunchedEffect(uiState.connectedSinceMs, uiState.connectionState) {
@@ -121,6 +129,8 @@ fun HomeScreen(
 
     val exitProvider = uiState.activeExitProvider
     val exitLabel = exitProvider.labelEn
+    val smartConnectAvailable = uiState.activeProfile != null &&
+        uiState.chainConfig.activeExitProvider == ChainExitType.NONE
 
     Column(
         modifier = Modifier
@@ -187,6 +197,50 @@ fun HomeScreen(
             actionHint = hintText,
             onClick = onToggleConnection
         )
+
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("Smart Connect", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = if (uiState.settings.smartConnectEnabled) {
+                            "Automatic URL testing • ${uiState.settings.smartConnectProfileIds.size} selected • ${uiState.settings.smartConnectIntervalSeconds}s interval"
+                        } else {
+                            "Choose trusted profiles; Sing-box selects the fastest healthy route."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = VisionColors.TextSecondary
+                    )
+                }
+                Switch(
+                    checked = uiState.settings.smartConnectEnabled,
+                    enabled = uiState.settings.smartConnectEnabled ||
+                        (smartConnectAvailable && uiState.profiles.size >= 2 &&
+                            uiState.settings.smartConnectProfileIds.count { id -> uiState.profiles.any { it.id == id } } >= 2),
+                    onCheckedChange = onSetSmartConnectEnabled
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            androidx.compose.material3.OutlinedButton(
+                onClick = { showSmartConnectProfiles = true },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Choose Smart Connect Profiles (${uiState.settings.smartConnectProfileIds.size})")
+            }
+            if (!smartConnectAvailable && !uiState.settings.smartConnectEnabled) {
+                Text(
+                    "Select an imported profile and turn off legacy Tor/Psiphon/WARP exit layers to use Smart Connect in this build.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = VisionColors.AmberWarning
+                )
+            } else if (uiState.settings.smartConnectEnabled && uiState.connectionState == VpnConnectionState.CONNECTED) {
+                Text(
+                    "Smart Connect URLTest group is active. Existing flows are kept; new connections use the fastest healthy selected outbound.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = VisionColors.EmeraldConnected
+                )
+            }
+        }
 
         if (uiState.statusMessage.isNotBlank()) {
             Text(
@@ -267,7 +321,27 @@ fun HomeScreen(
                 }
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    when (val selected = uiState.selectedProfile) {
+                    if (uiState.settings.smartConnectEnabled && uiState.connectionState == VpnConnectionState.CONNECTED) {
+                        Text(
+                            text = "Connection Profile • Smart Connect",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = VisionColors.TextSecondary
+                        )
+                        Text(
+                            text = "Automatic best-performing route",
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            ProtocolBadge("AUTO")
+                            Text(
+                                text = "${uiState.settings.smartConnectProfileIds.size} selected • ${uiState.settings.smartConnectIntervalSeconds}s checks",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = VisionColors.CyanHighlight
+                            )
+                        }
+                    } else when (val selected = uiState.selectedProfile) {
                         is SelectableProfile.BuiltInEngine -> {
                             Text(
                                 text = "Connection Profile • Built-in Engine",
@@ -542,6 +616,79 @@ fun HomeScreen(
             }
         }
     }
+    if (showSmartConnectProfiles) {
+        SmartConnectProfilesDialog(
+            uiState = uiState,
+            onDismiss = { showSmartConnectProfiles = false },
+            onUpdateSettings = onUpdateSettings
+        )
+    }
+}
+
+
+@Composable
+private fun SmartConnectProfilesDialog(
+    uiState: VisionUiState,
+    onDismiss: () -> Unit,
+    onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit
+) {
+    // Keep edits local while the user checks several profiles. Persist once on Done;
+    // saving each checkbox could trigger repeated VPN restarts while Smart Connect is active.
+    var selectedIds by remember(uiState.settings.smartConnectProfileIds) {
+        mutableStateOf(uiState.settings.smartConnectProfileIds.toSet())
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Smart Connect Profiles") },
+        text = {
+            Column(modifier = Modifier.height(420.dp)) {
+                Text(
+                    "Only checked profiles can be included in the automatic URLTest group. Select at least two profiles.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = VisionColors.TextSecondary
+                )
+                LazyColumn {
+                    items(uiState.profiles, key = { it.id }) { profile ->
+                        val checked = profile.id in selectedIds
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = checked,
+                                onCheckedChange = { selected ->
+                                    selectedIds = selectedIds.toMutableSet().apply {
+                                        if (selected) add(profile.id) else remove(profile.id)
+                                    }
+                                }
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(profile.name, style = MaterialTheme.typography.bodyMedium)
+                                Text("${profile.server}:${profile.port}", style = MaterialTheme.typography.labelSmall, color = VisionColors.TextSecondary)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = selectedIds.size >= 2,
+                onClick = {
+                    onUpdateSettings { current ->
+                        current.copy(smartConnectProfileIds = selectedIds.intersect(uiState.profiles.map { it.id }.toSet()))
+                    }
+                    onDismiss()
+                }
+            ) { Text("Done (${selectedIds.size})") }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+                TextButton(onClick = {
+                    onUpdateSettings { it.copy(smartConnectEnabled = false) }
+                    onDismiss()
+                }) { Text("Turn Off") }
+            }
+        }
+    )
 }
 
 @Composable
@@ -601,7 +748,7 @@ private fun ExitIpStatusCard(
                             color = VisionColors.TextPrimary
                         )
                         Text(
-                            text = "Country: ${exitIpInfo.formattedCountry}",
+                            text = "Country: ${exitIpInfo.countryFlag} ${exitIpInfo.formattedCountry}",
                             style = MaterialTheme.typography.bodyMedium,
                             color = VisionColors.EmeraldConnected
                         )
@@ -613,7 +760,7 @@ private fun ExitIpStatusCard(
                             color = VisionColors.AmberWarning
                         )
                         Text(
-                            text = "Country: ${exitIpInfo.formattedCountry}",
+                            text = "Country: ${exitIpInfo.countryFlag} ${exitIpInfo.formattedCountry}",
                             style = MaterialTheme.typography.labelSmall,
                             color = VisionColors.AmberWarning
                         )

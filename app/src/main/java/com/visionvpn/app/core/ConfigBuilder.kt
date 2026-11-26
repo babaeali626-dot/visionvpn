@@ -42,6 +42,7 @@ class ConfigBuilder {
         const val TAG_PROBE_IN = "mixed-probe-in"
         const val CLASH_API_PORT = 9090
         const val PROBE_PROXY_PORT = 10808
+        const val SMART_CONNECT_GROUP_TAG = "smart-connect-auto"
     }
 
     /**
@@ -118,19 +119,56 @@ class ConfigBuilder {
 
     fun buildSingBoxConfig(
         graph: RoutingGraph,
-        settings: AppSettings
+        settings: AppSettings,
+        smartConnectProfiles: List<ProxyProfile> = emptyList()
     ): String {
         val outbounds = mutableListOf<JsonObject>()
-        val finalTag = graph.finalOutboundTag
         val enforceStrictPrivacy = graph.isPrivacyExitMode
+        val smartProfiles = if (
+            settings.smartConnectEnabled &&
+            graph.nodes.size == 1 && graph.nodes.single() is RoutingNode.ProxyNode
+        ) {
+            smartConnectProfiles
+                .distinctBy { it.id }
+                .filter { it.id in settings.smartConnectProfileIds }
+                .onEach { validateProfile(it).getOrThrow() }
+                .take(settings.smartConnectCandidateCount.coerceIn(2, 100))
+        } else emptyList()
+        // The index is unique within this generated config and avoids hash collisions between IDs.
+        val smartTagByProfileId = smartProfiles.mapIndexed { index, profile ->
+            profile.id to "smart-proxy-$index"
+        }.toMap()
+        val finalTag = if (smartProfiles.size >= 2) SMART_CONNECT_GROUP_TAG else graph.finalOutboundTag
 
-        for (node in graph.nodes) {
+        if (smartProfiles.size >= 2) {
+            smartProfiles.forEach { profile ->
+                outbounds += buildProfileOutbound(
+                    tag = smartTagByProfileId.getValue(profile.id),
+                    profile = profile,
+                    detourTag = null,
+                    enableEchAuto = settings.echAutoEnabled
+                )
+            }
+            outbounds += buildJsonObject {
+                put("type", "urltest")
+                put("tag", SMART_CONNECT_GROUP_TAG)
+                putJsonArray("outbounds") { smartProfiles.forEach { add(JsonPrimitive(smartTagByProfileId.getValue(it.id))) } }
+                put("url", "https://www.gstatic.com/generate_204")
+                put("interval", "${settings.smartConnectIntervalSeconds.coerceIn(15, 3600)}s")
+                put("tolerance", settings.smartConnectToleranceMs.coerceIn(1, 500))
+                put("idle_timeout", "30m")
+                // Preserve existing flows; new flows use the fastest healthy member.
+                put("interrupt_exist_connections", false)
+            }
+        } else {
+            for (node in graph.nodes) {
             when (node) {
                 is RoutingNode.ProxyNode -> {
                     outbounds += buildProfileOutbound(
                         tag = node.tag,
                         profile = node.profile,
-                        detourTag = node.upstreamTag
+                        detourTag = node.upstreamTag,
+                        enableEchAuto = settings.echAutoEnabled
                     )
                 }
                 is RoutingNode.WarpNode -> {
@@ -153,6 +191,7 @@ class ConfigBuilder {
                     )
                 }
             }
+            }
         }
 
         outbounds += buildJsonObject {
@@ -170,10 +209,10 @@ class ConfigBuilder {
 
         val root = buildJsonObject {
             putJsonObject("log") {
-                put("level", "info")
+                put("level", settings.coreLogLevel.trim().lowercase().takeIf { it in setOf("error", "warn", "info", "debug", "trace") } ?: "info")
                 put("timestamp", true)
             }
-            put("dns", buildDnsConfig(graph, settings, finalTag, enforceStrictPrivacy))
+            put("dns", buildDnsConfig(graph, settings, finalTag, enforceStrictPrivacy, smartProfiles))
             put("inbounds", buildInbounds(graph, settings))
             put("outbounds", JsonArray(outbounds))
             put("route", buildRouteConfig(graph, settings, finalTag, enforceStrictPrivacy))
@@ -187,6 +226,113 @@ class ConfigBuilder {
             }
         }
 
+        return prettyJson.encodeToString(JsonObject.serializer(), root)
+    }
+
+    /**
+     * Builds one no-TUN Libbox instance containing one independently routed loopback inbound
+     * and outbound per candidate. This is the safe basis for real concurrent HTTPS probes:
+     * one Go runtime/service owns all outbounds, while bounded HTTP probes run in parallel.
+     */
+    fun buildLatencyProbeBatchConfig(
+        profiles: List<ProxyProfile>,
+        localPorts: List<Int>,
+        settings: AppSettings = AppSettings()
+    ): String {
+        require(profiles.isNotEmpty()) { "At least one profile is required for a batch probe." }
+        require(profiles.size == localPorts.size) { "Every probe profile must have one reserved loopback port." }
+        require(profiles.size <= 100) { "A probe batch is limited to 100 profiles." }
+        profiles.forEach { validateProfile(it).getOrThrow() }
+        require(localPorts.distinct().size == localPorts.size) { "Probe loopback ports must be unique." }
+        localPorts.forEach { require(it in 1024..65535) { "Invalid probe loopback port." } }
+
+        val candidateTags = profiles.indices.map { "probe-candidate-$it" }
+        val remoteDnsTags = profiles.indices.map { "dns-remote-$it" }
+        val bootstrapDnsTags = profiles.indices.map { "dns-bootstrap-$it" }
+        val root = buildJsonObject {
+            putJsonObject("log") { put("level", "error") }
+            putJsonObject("dns") {
+                putJsonArray("servers") {
+                    profiles.forEachIndexed { index, profile ->
+                        add(buildJsonObject {
+                            put("tag", remoteDnsTags[index])
+                            put("address", settings.remoteDns)
+                            put("detour", candidateTags[index])
+                            put("strategy", "ipv4_only")
+                        })
+                        if (!isIpLiteral(profile.server)) {
+                            add(buildJsonObject {
+                                put("tag", bootstrapDnsTags[index])
+                                put("address", settings.directDns)
+                                put("detour", TAG_DIRECT)
+                                put("strategy", "ipv4_only")
+                            })
+                        }
+                    }
+                }
+                putJsonArray("rules") {
+                    // Resolve each proxy server with the narrow bootstrap resolver, otherwise
+                    // its own detoured DNS request could loop back into that not-yet-resolved proxy.
+                    profiles.forEachIndexed { index, profile ->
+                        if (!isIpLiteral(profile.server)) {
+                            add(buildJsonObject {
+                                putJsonArray("domain") { add(JsonPrimitive(profile.server)) }
+                                put("server", bootstrapDnsTags[index])
+                            })
+                        }
+                    }
+                    // Resolve the actual health-check destination through the same candidate
+                    // that carries its HTTPS request. This avoids testing all candidates with
+                    // candidate zero's DNS path.
+                    profiles.indices.forEach { index ->
+                        add(buildJsonObject {
+                            putJsonArray("inbound") { add(JsonPrimitive("probe-in-$index")) }
+                            put("server", remoteDnsTags[index])
+                        })
+                    }
+                }
+                put("final", remoteDnsTags.first())
+                put("strategy", "ipv4_only")
+                put("independent_cache", true)
+            }
+            putJsonArray("inbounds") {
+                profiles.indices.forEach { index ->
+                    add(buildJsonObject {
+                        put("type", "mixed")
+                        put("tag", "probe-in-$index")
+                        put("listen", "127.0.0.1")
+                        put("listen_port", localPorts[index])
+                    })
+                }
+            }
+            putJsonArray("outbounds") {
+                profiles.forEachIndexed { index, profile ->
+                    add(buildProfileOutbound(
+                        tag = candidateTags[index],
+                        profile = profile,
+                        detourTag = null,
+                        enableEchAuto = settings.echAutoEnabled
+                    ))
+                }
+                add(buildJsonObject { put("type", "direct"); put("tag", TAG_DIRECT) })
+                add(buildJsonObject { put("type", "dns"); put("tag", TAG_DNS_OUT) })
+            }
+            putJsonObject("route") {
+                putJsonArray("rules") {
+                    add(buildJsonObject {
+                        put("protocol", "dns")
+                        put("outbound", TAG_DNS_OUT)
+                    })
+                    profiles.indices.forEach { index ->
+                        add(buildJsonObject {
+                            put("inbound", "probe-in-$index")
+                            put("outbound", candidateTags[index])
+                        })
+                    }
+                }
+                put("final", candidateTags.first())
+            }
+        }
         return prettyJson.encodeToString(JsonObject.serializer(), root)
     }
 
@@ -271,7 +417,8 @@ class ConfigBuilder {
         graph: RoutingGraph,
         settings: AppSettings,
         finalTag: String,
-        enforceStrictPrivacy: Boolean
+        enforceStrictPrivacy: Boolean,
+        additionalBootstrapProfiles: List<ProxyProfile> = emptyList()
     ): JsonObject = buildJsonObject {
         val effectiveStrategy = if (settings.ipv6Policy == Ipv6Policy.BLOCK_IPV6) {
             "ipv4_only"
@@ -303,7 +450,7 @@ class ConfigBuilder {
                     else -> Unit
                 }
             }
-        }.distinct()
+        }.plus(additionalBootstrapProfiles.filter { !isIpLiteral(it.server) }.map { it.server }).distinct()
 
         putJsonArray("servers") {
             add(buildJsonObject {
@@ -390,7 +537,7 @@ class ConfigBuilder {
             put("interface_name", "tun0")
             put("inet4_address", "172.19.0.1/30")
             put("inet6_address", "fdfe:dcba:9876::1/126")
-            put("mtu", settings.mtu.coerceIn(1280, 9000))
+            put("mtu", settings.mtu.coerceIn(1280, 1500))
             put("auto_route", true)
             put("strict_route", true)
             put("stack", "mixed")
@@ -547,7 +694,8 @@ class ConfigBuilder {
     private fun buildProfileOutbound(
         tag: String,
         profile: ProxyProfile,
-        detourTag: String?
+        detourTag: String?,
+        enableEchAuto: Boolean = false
     ): JsonObject {
         validateProfile(profile).getOrThrow()
         return buildJsonObject {
@@ -563,7 +711,7 @@ class ConfigBuilder {
                 put("server_port", profile.port)
                 put("uuid", profile.uuid)
                 if (profile.flow.isNotBlank()) put("flow", profile.flow)
-                putTlsAndTransport(profile)
+                putTlsAndTransport(profile, enableEchAuto)
             }
             ProxyProtocol.VMESS -> {
                 put("type", "vmess")
@@ -572,14 +720,14 @@ class ConfigBuilder {
                 put("uuid", profile.uuid)
                 put("security", profile.encryption.ifBlank { "auto" })
                 put("alter_id", profile.alterId)
-                putTlsAndTransport(profile)
+                putTlsAndTransport(profile, enableEchAuto)
             }
             ProxyProtocol.TROJAN -> {
                 put("type", "trojan")
                 put("server", profile.server)
                 put("server_port", profile.port)
                 put("password", profile.password)
-                putTlsAndTransport(profile)
+                putTlsAndTransport(profile, enableEchAuto)
             }
             ProxyProtocol.SHADOWSOCKS -> {
                 put("type", "shadowsocks")
@@ -603,6 +751,7 @@ class ConfigBuilder {
                     put("enabled", true)
                     put("server_name", profile.sni.ifBlank { profile.server })
                     put("insecure", profile.allowInsecure)
+                    if (enableEchAuto) putJsonObject("ech") { put("enabled", true); putJsonArray("config") { } }
                 }
             }
             ProxyProtocol.TUIC -> {
@@ -617,6 +766,7 @@ class ConfigBuilder {
                     put("enabled", true)
                     put("server_name", profile.sni.ifBlank { profile.server })
                     put("insecure", profile.allowInsecure)
+                    if (enableEchAuto) putJsonObject("ech") { put("enabled", true); putJsonArray("config") { } }
                     if (profile.alpn.isNotEmpty()) {
                         putJsonArray("alpn") { profile.alpn.forEach { add(JsonPrimitive(it)) } }
                     }
@@ -653,7 +803,7 @@ class ConfigBuilder {
         }
     }
 
-    private fun kotlinx.serialization.json.JsonObjectBuilder.putTlsAndTransport(profile: ProxyProfile) {
+    private fun kotlinx.serialization.json.JsonObjectBuilder.putTlsAndTransport(profile: ProxyProfile, enableEchAuto: Boolean) {
         val useTls = profile.security.equals("tls", ignoreCase = true) ||
             profile.security.equals("reality", ignoreCase = true)
         if (useTls) {
@@ -664,6 +814,13 @@ class ConfigBuilder {
                 put("insecure", if (isRealitySecurity) false else profile.allowInsecure)
                 if (profile.alpn.isNotEmpty()) {
                     putJsonArray("alpn") { profile.alpn.forEach { add(JsonPrimitive(it)) } }
+                }
+                if (enableEchAuto && !profile.security.equals("reality", ignoreCase = true)) {
+                    putJsonObject("ech") {
+                        put("enabled", true)
+                        // Empty config tells Sing-box v1.10.7 to discover ECHConfig via DNS.
+                        putJsonArray("config") { }
+                    }
                 }
                 val isReality = profile.security.equals("reality", ignoreCase = true)
                 val rawFp = profile.fingerprint.trim()

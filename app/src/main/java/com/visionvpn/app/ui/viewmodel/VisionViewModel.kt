@@ -79,6 +79,8 @@ data class VisionUiState(
     val isTestingLatency: Boolean = false,
     val testingSubscriptionId: String? = null,
     val latencyProgress: Pair<Int, Int>? = null,
+    val isSpeedTestRunning: Boolean = false,
+    val speedTestProgress: Pair<Long, Long>? = null,
     val isFetchingSubscription: Boolean = false,
     val refreshingSubscriptionIds: Set<String> = emptySet(),
     val snackbarMessage: String? = null
@@ -139,6 +141,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private val _isTestingLatency = MutableStateFlow(false)
     private val _testingSubscriptionId = MutableStateFlow<String?>(null)
     private val _latencyProgress = MutableStateFlow<Pair<Int, Int>?>(null)
+    private val _isSpeedTestRunning = MutableStateFlow(false)
+    private val _speedTestProgress = MutableStateFlow<Pair<Long, Long>?>(null)
     private val _isFetchingSub = MutableStateFlow(false)
     private val _refreshingSubIds = MutableStateFlow<Set<String>>(emptySet())
     private val _snackbarMessage = MutableStateFlow<String?>(null)
@@ -146,6 +150,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     val installedApps: StateFlow<List<InstalledAppInfo>> = _installedApps.asStateFlow()
 
     private var latencyTestJob: Job? = null
+    private var speedTestJob: Job? = null
     private var vpnStartJob: Job? = null
     private val latencyRequestCounter = AtomicLong(0L)
     private val activeImportUrls = mutableSetOf<String>()
@@ -210,8 +215,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             ) { bh, ao, ld -> Triple(bh, ao, ld) }
         ) { (refreshingIds, snackbar), storageErr, exitIp, (blackhole, alwaysOn, lockdown) ->
             ExtraSlice(refreshingIds, snackbar, storageErr, exitIp, blackhole, alwaysOn, lockdown)
+        },
+        combine(_isSpeedTestRunning, _speedTestProgress) { running, progress ->
+            SpeedTestSlice(running, progress)
         }
-    ) { persisted, core, activity, extra ->
+    ) { persisted, core, activity, extra, speedTest ->
         val groups = SubscriptionProfileManager.groupProfiles(persisted.profiles, persisted.subs)
         val builtIns = BuiltInProfilesCatalog.buildBuiltInProfiles(persisted.chain, detectedPtAvailability)
         val selected = BuiltInProfilesCatalog.resolveSelectedProfile(
@@ -257,6 +265,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             isTestingLatency = activity.testing,
             testingSubscriptionId = activity.testingSubId,
             latencyProgress = activity.latencyProgress,
+            isSpeedTestRunning = speedTest.running,
+            speedTestProgress = speedTest.progress,
             isFetchingSubscription = activity.fetching,
             refreshingSubscriptionIds = extra.refreshingIds,
             snackbarMessage = extra.snackbar
@@ -291,6 +301,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         val fetching: Boolean
     )
 
+    private data class SpeedTestSlice(
+        val running: Boolean,
+        val progress: Pair<Long, Long>?
+    )
+
     private data class ExtraSlice(
         val refreshingIds: Set<String>,
         val snackbar: String?,
@@ -304,6 +319,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     override fun onCleared() {
         latencyTestJob?.cancel()
         latencyTestJob = null
+        speedTestJob?.cancel()
+        speedTestJob = null
         super.onCleared()
     }
 
@@ -342,6 +359,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun stopVpn() {
+        speedTestJob?.cancel()
         // A pending start may still be waiting for a headless probe to finish closing. Cancel it
         // before dispatching Disconnect so it cannot issue a late ACTION_START after the user
         // has explicitly asked to stop.
@@ -365,11 +383,21 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
      */
     fun selectProfile(profileId: String) {
         viewModelScope.launch {
-            val currentChain = uiState.value.chainConfig
+            val snapshot = uiState.value
+            val currentChain = snapshot.chainConfig
             if (currentChain.enabled && !currentChain.useEntryProxy) {
                 repository.saveChainConfig(currentChain.withExitProvider(ChainExitType.NONE))
             }
+            // A manual profile pick is an explicit pin: do not let URLTest immediately
+            // override the user's choice on the next health-check cycle.
+            if (snapshot.settings.smartConnectEnabled) {
+                repository.saveAppSettings(snapshot.settings.copy(smartConnectEnabled = false))
+            }
             repository.setActiveProfileId(profileId)
+            if (snapshot.connectionState == VpnConnectionState.CONNECTED) {
+                postMessage("Manual profile selected. Smart Connect is paused; reconnecting with the pinned profile…")
+                controller.requestReconnect()
+            }
         }
     }
 
@@ -382,6 +410,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             if (engineType == LocalEngineProfileType.WARP && !uiState.value.chainConfig.warpConfig.isRegistered) {
                 postMessage(WarpManager.PROVISIONING_BLOCKED_MESSAGE)
                 return@launch
+            }
+            if (uiState.value.settings.smartConnectEnabled) {
+                repository.saveAppSettings(uiState.value.settings.copy(smartConnectEnabled = false))
             }
             val updatedChain = uiState.value.chainConfig.copy(
                 enabled = true,
@@ -416,6 +447,10 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     fun setExitProvider(provider: ChainExitType) {
         viewModelScope.launch {
             val updated = uiState.value.chainConfig.withExitProvider(provider)
+            if (provider != ChainExitType.NONE && uiState.value.settings.smartConnectEnabled) {
+                repository.saveAppSettings(uiState.value.settings.copy(smartConnectEnabled = false))
+                postMessage("Smart Connect paused because a local exit/chain provider was selected.")
+            }
             repository.saveChainConfig(updated)
             if (uiState.value.connectionState == VpnConnectionState.CONNECTED) {
                 postMessage("Exit provider updated; reconnecting safely…")
@@ -743,6 +778,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 profiles = mutation.profiles,
                 activeProfileId = mutation.activeProfileId
             )
+            pruneSmartConnectSelection(
+                previousSettings = snapshot.settings,
+                remainingProfiles = mutation.profiles,
+                activeProfileWasRemoved = mutation.activeProfileId != snapshot.activeProfileId
+            )
             if (subName != null) {
                 postMessage("Removed subscription '$subName'.")
             }
@@ -766,16 +806,55 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             }
             val nextActive = if (snapshot.activeProfileId == profileId) null else snapshot.activeProfileId
             repository.saveSubscriptionsAndProfiles(updatedSubs, remaining, nextActive)
+            pruneSmartConnectSelection(
+                previousSettings = snapshot.settings,
+                remainingProfiles = remaining,
+                activeProfileWasRemoved = nextActive != snapshot.activeProfileId
+            )
+        }
+    }
+
+    private suspend fun pruneSmartConnectSelection(
+        previousSettings: AppSettings,
+        remainingProfiles: List<ProxyProfile>,
+        activeProfileWasRemoved: Boolean
+    ) {
+        val remainingIds = remainingProfiles.map { it.id }.toSet()
+        val nextSmartIds = previousSettings.smartConnectProfileIds.intersect(remainingIds)
+        val nextEnabled = previousSettings.smartConnectEnabled && nextSmartIds.size >= 2
+        val smartConfigChanged = nextSmartIds != previousSettings.smartConnectProfileIds ||
+            nextEnabled != previousSettings.smartConnectEnabled
+        if (smartConfigChanged) {
+            repository.saveAppSettings(
+                previousSettings.copy(
+                    smartConnectProfileIds = nextSmartIds,
+                    smartConnectEnabled = nextEnabled
+                )
+            )
+            if (!nextEnabled && previousSettings.smartConnectEnabled) {
+                postMessage("Smart Connect was disabled because fewer than two selected profiles remain.")
+            }
+        }
+        if ((smartConfigChanged || activeProfileWasRemoved) &&
+            uiState.value.connectionState == VpnConnectionState.CONNECTED
+        ) {
+            controller.requestReconnect()
         }
     }
 
     fun cancelLatencyTests() {
         latencyRequestCounter.incrementAndGet()
-        latencyTestJob?.cancel()
-        latencyTestJob = null
-        _isTestingLatency.value = false
-        _testingSubscriptionId.value = null
-        _latencyProgress.value = null
+        val active = latencyTestJob ?: return
+        active.cancel()
+        viewModelScope.launch {
+            active.cancelAndJoin()
+            if (latencyTestJob === active) {
+                latencyTestJob = null
+                _isTestingLatency.value = false
+                _testingSubscriptionId.value = null
+                _latencyProgress.value = null
+            }
+        }
     }
 
     fun testSingleLatency(profile: ProxyProfile) {
@@ -818,13 +897,16 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             _testingSubscriptionId.value = scopeSubscriptionId
             _latencyProgress.value = 0 to targets.size
             try {
-                val probeTimeoutMs = uiState.value.settings.latencyProbeTimeoutSeconds
-                    .coerceIn(1, 30) * 1_000
-                val measurements = PingTester.testProfiles(
+                val testSettings = uiState.value.settings
+                val probeTimeoutMs = testSettings.latencyProbeTimeoutSeconds.coerceIn(1, 30) * 1_000
+                val measurements = PingTester.testProfilesWithSharedLibbox(
+                    context = app,
+                    configBuilder = controller.configBuilder,
                     profiles = targets,
-                    probe = proxyLatencyProbe,
+                    settings = testSettings,
+                    testUrl = testSettings.latencyTestUrl,
                     timeoutMs = probeTimeoutMs,
-                    maxConcurrency = PingTester.DEFAULT_MAX_CONCURRENCY,
+                    maxConcurrency = testSettings.latencyProbeConcurrency.coerceIn(1, 100),
                     onProgress = { completed, total ->
                         if (latencyRequestCounter.get() == requestId) {
                             _latencyProgress.value = completed to total
@@ -834,14 +916,21 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 if (latencyRequestCounter.get() != requestId) return@launch
 
                 val snapshot = uiState.value
-                val sortedProfiles = withContext(Dispatchers.Default) {
-                    SubscriptionProfileManager.applyLatencyResultsAndSortPerSubscription(
-                        profiles = snapshot.profiles,
-                        subscriptions = snapshot.subscriptions,
-                        measurements = measurements
-                    )
+                val updatedProfiles = withContext(Dispatchers.Default) {
+                    if (testSettings.autoSortAfterLatencyTest) {
+                        SubscriptionProfileManager.applyLatencyResultsAndSortPerSubscription(
+                            profiles = snapshot.profiles,
+                            subscriptions = snapshot.subscriptions,
+                            measurements = measurements
+                        )
+                    } else {
+                        SubscriptionProfileManager.applyLatencyResultsWithoutSorting(
+                            profiles = snapshot.profiles,
+                            measurements = measurements
+                        )
+                    }
                 }
-                repository.saveProfiles(sortedProfiles)
+                repository.saveProfiles(updatedProfiles)
 
                 val okCount = measurements.count { it.status == com.visionvpn.app.data.model.LatencyStatus.SUCCESS }
                 if (LibboxRuntime.currentMode() == com.visionvpn.app.core.LibboxLeaseMode.FAULTED) {
@@ -850,7 +939,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             "$okCount/${targets.size} profiles reached before quarantine. Explicitly Disconnect or restart VisionVPN."
                     )
                 } else {
-                    postMessage("Proxy test complete: $okCount/${targets.size} reachable (sorted per subscription)")
+                    val sortNote = if (testSettings.autoSortAfterLatencyTest) "sorted per subscription" else "profile order preserved"
+                    postMessage("Proxy test complete: $okCount/${targets.size} reachable ($sortNote)")
                 }
             } catch (ce: CancellationException) {
                 throw ce
@@ -864,9 +954,55 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun runCurrentTunnelSpeedTest() {
+        if (uiState.value.connectionState != VpnConnectionState.CONNECTED) {
+            postMessage("Connect the VPN before running a speed test.")
+            return
+        }
+        if (speedTestJob?.isActive == true) return
+        val settingsSnapshot = uiState.value.settings
+        val sizeMiB = settingsSnapshot.speedTestDownloadSizeMiB.coerceIn(1, 100)
+        speedTestJob = viewModelScope.launch {
+            _isSpeedTestRunning.value = true
+            _speedTestProgress.value = 0L to (sizeMiB.toLong() * 1024L * 1024L)
+            postMessage("Speed test started: downloading $sizeMiB MiB through the active VPN tunnel…")
+            try {
+                val result = PingTester.downloadSpeedTestThroughLocalHttpProxy(
+                    proxyPort = com.visionvpn.app.core.ConfigBuilder.PROBE_PROXY_PORT,
+                    downloadSizeMiB = sizeMiB,
+                    timeoutMs = 120_000,
+                    onProgress = { downloaded, expected -> _speedTestProgress.value = downloaded to expected }
+                )
+                postMessage(
+                    "Speed test complete: %.2f Mbps • %d MiB • %d ms".format(
+                        java.util.Locale.US,
+                        result.megabitsPerSecond,
+                        sizeMiB,
+                        result.durationMs
+                    )
+                )
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                postMessage("Speed test failed: ${e.message ?: e.javaClass.simpleName}")
+            } finally {
+                _isSpeedTestRunning.value = false
+                _speedTestProgress.value = null
+            }
+        }
+    }
+
+    fun cancelCurrentTunnelSpeedTest() {
+        speedTestJob?.cancel()
+    }
+
     fun updateChainConfig(transform: (ChainConfig) -> ChainConfig) {
         viewModelScope.launch {
             val updated = transform(uiState.value.chainConfig)
+            if (updated.activeExitProvider != ChainExitType.NONE && uiState.value.settings.smartConnectEnabled) {
+                repository.saveAppSettings(uiState.value.settings.copy(smartConnectEnabled = false))
+                postMessage("Smart Connect paused because a Tor/Psiphon/WARP chain was selected.")
+            }
             repository.saveChainConfig(updated)
         }
     }
@@ -878,9 +1014,58 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
     fun updateSettings(transform: (AppSettings) -> AppSettings) {
         viewModelScope.launch {
-            val updated = transform(uiState.value.settings)
+            val snapshot = uiState.value
+            val previous = snapshot.settings
+            val existingProfileIds = snapshot.profiles.map { it.id }.toSet()
+            val transformed = transform(previous)
+            val eligibleIds = transformed.smartConnectProfileIds.intersect(existingProfileIds)
+            val canEnableSmartConnect = eligibleIds.size >= 2
+            val updated = transformed.copy(
+                smartConnectProfileIds = eligibleIds,
+                smartConnectEnabled = transformed.smartConnectEnabled && canEnableSmartConnect
+            )
             repository.saveAppSettings(updated)
+            if (transformed.smartConnectEnabled && !updated.smartConnectEnabled) {
+                postMessage("Select at least two existing profiles. Smart Connect remains off until then.")
+            }
+            val coreChanged = previous.remoteDns != updated.remoteDns ||
+                previous.directDns != updated.directDns ||
+                previous.enableFakeDns != updated.enableFakeDns ||
+                previous.dnsStrategy != updated.dnsStrategy ||
+                previous.ipv6Policy != updated.ipv6Policy ||
+                previous.mtu != updated.mtu ||
+                previous.bypassLan != updated.bypassLan ||
+                previous.bypassIran != updated.bypassIran ||
+                previous.blockAds != updated.blockAds ||
+                previous.echAutoEnabled != updated.echAutoEnabled ||
+                previous.coreLogLevel != updated.coreLogLevel ||
+                ((previous.smartConnectEnabled || updated.smartConnectEnabled) && (
+                    previous.smartConnectEnabled != updated.smartConnectEnabled ||
+                        previous.smartConnectProfileIds != updated.smartConnectProfileIds ||
+                        previous.smartConnectIntervalSeconds != updated.smartConnectIntervalSeconds ||
+                        previous.smartConnectCandidateCount != updated.smartConnectCandidateCount ||
+                        previous.smartConnectToleranceMs != updated.smartConnectToleranceMs
+                    ))
+            if (coreChanged && uiState.value.connectionState == VpnConnectionState.CONNECTED) {
+                postMessage("Network settings changed. Reconnecting with the updated secure route…")
+                controller.requestReconnect()
+            }
         }
+    }
+
+    fun setSmartConnectEnabled(enabled: Boolean) {
+        val state = uiState.value
+        val eligible = state.settings.smartConnectProfileIds
+            .count { id -> state.profiles.any { it.id == id } }
+        if (enabled && eligible < 2) {
+            postMessage("Select at least two profiles for Smart Connect before enabling it.")
+            return
+        }
+        if (enabled && (state.activeProfile == null || state.chainConfig.activeExitProvider != ChainExitType.NONE)) {
+            postMessage("Smart Connect currently requires a selected imported profile without an active Tor/Psiphon/WARP chain.")
+            return
+        }
+        updateSettings { it.copy(smartConnectEnabled = enabled) }
     }
 
     fun loadInstalledApps() {

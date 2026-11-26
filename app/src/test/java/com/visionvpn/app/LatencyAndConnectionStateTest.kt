@@ -49,6 +49,11 @@ class LatencyAndConnectionStateTest {
     @Test
     fun `AppSettings defaults to five second probe timeout and legacy JSON decodes the default`() {
         assertEquals(5, AppSettings().latencyProbeTimeoutSeconds)
+        assertEquals(20, AppSettings().latencyProbeConcurrency)
+        assertEquals(1, AppSettings().speedTestDownloadSizeMiB)
+        assertEquals(60, AppSettings().smartConnectIntervalSeconds)
+        assertEquals(20, AppSettings().smartConnectCandidateCount)
+        assertEquals(1500, AppSettings().mtu)
         val legacy = json.decodeFromString<AppSettings>("""{"schemaVersion":3}""")
         assertEquals(5, legacy.latencyProbeTimeoutSeconds)
     }

@@ -8,8 +8,11 @@ import com.visionvpn.app.data.model.LatencyStatus
 import com.visionvpn.app.data.model.ProxyProfile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
@@ -133,6 +136,75 @@ object PingTester {
         }
     }
 
+    data class SpeedTestResult(
+        val bytesDownloaded: Long,
+        val durationMs: Long,
+        val megabitsPerSecond: Double
+    )
+
+    /**
+     * Downloads a bounded Cloudflare speed-test payload through the active tunnel's loopback
+     * proxy. The body is streamed in a fixed 32 KiB buffer; memory use does not scale with size.
+     */
+    suspend fun downloadSpeedTestThroughLocalHttpProxy(
+        proxyPort: Int = ConfigBuilder.PROBE_PROXY_PORT,
+        downloadSizeMiB: Int = 1,
+        timeoutMs: Int = 60_000,
+        onProgress: (downloadedBytes: Long, expectedBytes: Long) -> Unit = { _, _ -> }
+    ): SpeedTestResult = withContext(Dispatchers.IO) {
+        val expectedBytes = downloadSizeMiB.coerceIn(1, 100).toLong() * 1024L * 1024L
+        runInterruptible(Dispatchers.IO) {
+            var connection: HttpURLConnection? = null
+            try {
+                val proxy = JavaNetProxy(JavaNetProxy.Type.HTTP, InetSocketAddress("127.0.0.1", proxyPort))
+                val url = URL("https://speed.cloudflare.com/__down?bytes=$expectedBytes")
+                require(url.protocol.equals("https", ignoreCase = true)) { "Speed-test endpoint must use HTTPS." }
+                connection = (url.openConnection(proxy) as HttpURLConnection).apply {
+                    connectTimeout = timeoutMs.coerceIn(5_000, 120_000)
+                    readTimeout = timeoutMs.coerceIn(5_000, 120_000)
+                    instanceFollowRedirects = false
+                    requestMethod = "GET"
+                    setRequestProperty("Accept", "application/octet-stream")
+                    setRequestProperty("Accept-Encoding", "identity")
+                    setRequestProperty("Cache-Control", "no-cache")
+                    setRequestProperty("Connection", "close")
+                }
+                val response = connection.responseCode
+                require(response in 200..299) { "Speed-test server returned HTTP $response." }
+                val contentLength = connection.contentLengthLong
+                require(contentLength < 0L || contentLength == expectedBytes) {
+                    "Speed-test server returned an unexpected payload size."
+                }
+                val startNs = System.nanoTime()
+                var total = 0L
+                val buffer = ByteArray(32 * 1024)
+                connection.inputStream.use { input ->
+                    while (total < expectedBytes) {
+                        if (Thread.currentThread().isInterrupted) throw InterruptedException("Speed test cancelled")
+                        val requestBytes = minOf(buffer.size.toLong(), expectedBytes - total).toInt()
+                        val count = input.read(buffer, 0, requestBytes)
+                        if (count < 0) break
+                        if (count == 0) continue
+                        total += count
+                        onProgress(total, expectedBytes)
+                    }
+                }
+                require(total == expectedBytes) {
+                    "Speed-test download ended early ($total of $expectedBytes bytes)."
+                }
+                val durationMs = ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
+                val mbps = (total.toDouble() * 8.0) / (durationMs.toDouble() * 1_000.0)
+                SpeedTestResult(total, durationMs, mbps)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (ie: InterruptedException) {
+                throw CancellationException("Speed test cancelled")
+            } finally {
+                runCatching { connection?.disconnect() }
+            }
+        }
+    }
+
     /**
      * Creates a real Sing-box (`Libbox`) end-to-end proxy probe that spins up a temporary
      * no-TUN loopback inbound for each candidate profile and tears it down reliably in `finally`.
@@ -222,6 +294,284 @@ object PingTester {
             }
         }
         return results.filterNotNull()
+    }
+
+    /**
+     * Runs a complete profile batch through one headless Libbox service and unique mixed inbounds.
+     * Unlike the former per-profile service startup loop, this allows up to `maxConcurrency`
+     * simultaneous HTTPS health requests without racing multiple Go runtimes or data directories.
+     */
+    suspend fun testProfilesWithSharedLibbox(
+        context: Context,
+        configBuilder: ConfigBuilder,
+        profiles: List<ProxyProfile>,
+        settings: AppSettings,
+        testUrl: String = DEFAULT_TEST_URL,
+        timeoutMs: Int = DEFAULT_TIMEOUT_MS,
+        maxConcurrency: Int = 20,
+        clockMs: () -> Long = { System.currentTimeMillis() },
+        onProgress: (completed: Int, total: Int) -> Unit = { _, _ -> },
+        onResult: (LatencyMeasurement) -> Unit = {}
+    ): List<LatencyMeasurement> {
+        if (profiles.isEmpty()) return emptyList()
+        val allResults = ArrayList<LatencyMeasurement>(profiles.size)
+        var completedBeforeBatch = 0
+        // Bound native configuration size while still supporting large subscriptions. Batches are
+        // strictly sequential at the Libbox lifecycle level; only HTTPS probes inside each batch
+        // run concurrently, up to the user's configured limit.
+        for (batch in profiles.chunked(100)) {
+            val batchResults = testProfileChunkWithSharedLibbox(
+                context = context,
+                configBuilder = configBuilder,
+                profiles = batch,
+                settings = settings,
+                testUrl = testUrl,
+                timeoutMs = timeoutMs,
+                maxConcurrency = maxConcurrency,
+                clockMs = clockMs,
+                onProgress = { completed, _ -> onProgress(completedBeforeBatch + completed, profiles.size) },
+                onResult = onResult
+            )
+            allResults += batchResults
+            completedBeforeBatch += batch.size
+            onProgress(completedBeforeBatch, profiles.size)
+        }
+        return allResults
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun testProfileChunkWithSharedLibbox(
+        context: Context,
+        configBuilder: ConfigBuilder,
+        profiles: List<ProxyProfile>,
+        settings: AppSettings,
+        testUrl: String = DEFAULT_TEST_URL,
+        timeoutMs: Int = DEFAULT_TIMEOUT_MS,
+        maxConcurrency: Int = 20,
+        clockMs: () -> Long = { System.currentTimeMillis() },
+        onProgress: (completed: Int, total: Int) -> Unit = { _, _ -> },
+        onResult: (LatencyMeasurement) -> Unit = {}
+    ): List<LatencyMeasurement> {
+        if (profiles.isEmpty()) return emptyList()
+        require(profiles.size <= 100) { "A native profile-test batch is limited to 100 profiles." }
+        val safeTimeoutMs = timeoutMs.coerceIn(1_000, 30_000)
+        val safeConcurrency = maxConcurrency.coerceIn(1, 100)
+        val validUrl = runCatching { URL(testUrl) }.getOrNull()
+        if (validUrl == null || !validUrl.protocol.equals("https", ignoreCase = true) || validUrl.host.isNullOrBlank()) {
+            return profiles.map { profile ->
+                LatencyMeasurement(
+                    profile.subscriptionId,
+                    profile.connectionFingerprint(),
+                    LatencyStatus.PROTOCOL_ERROR,
+                    null,
+                    "Latency test URL must be a valid HTTPS endpoint.",
+                    clockMs()
+                ).also(onResult)
+            }.also { onProgress(it.size, profiles.size) }
+        }
+
+        val results = arrayOfNulls<LatencyMeasurement>(profiles.size)
+        val validOriginalIndexes = mutableListOf<Int>()
+        profiles.forEachIndexed { index, profile ->
+            val validation = configBuilder.validateProfile(profile)
+            if (validation.isSuccess) {
+                validOriginalIndexes += index
+            } else {
+                val result = LatencyMeasurement(
+                    profile.subscriptionId,
+                    profile.connectionFingerprint(),
+                    LatencyStatus.PROTOCOL_ERROR,
+                    null,
+                    LogRedactor.redact(validation.exceptionOrNull()?.message ?: "Invalid profile configuration"),
+                    clockMs()
+                )
+                results[index] = result
+                onResult(result)
+            }
+        }
+        val completed = AtomicInteger(results.count { it != null })
+        if (completed.get() > 0) onProgress(completed.get(), profiles.size)
+        if (validOriginalIndexes.isEmpty()) {
+            onProgress(profiles.size, profiles.size)
+            return results.filterNotNull()
+        }
+
+        val batchResult = LibboxRuntime.withHeadlessProbeLease {
+            val libboxClass = try {
+                Class.forName(LIBBOX_CLASS)
+            } catch (_: ClassNotFoundException) {
+                val reason = "Sing-box native core (libbox.aar) is not available for proxy testing"
+                validOriginalIndexes.forEach { originalIndex ->
+                    val profile = profiles[originalIndex]
+                    results[originalIndex] = LatencyMeasurement(
+                        profile.subscriptionId, profile.connectionFingerprint(), LatencyStatus.FAILED,
+                        null, reason, clockMs()
+                    )
+                    onResult(results[originalIndex]!!)
+                }
+                onProgress(profiles.size, profiles.size)
+                return@withHeadlessProbeLease results.filterNotNull()
+            }
+
+            try {
+                LibboxRuntime.ensureInitialized(context, libboxClass)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                val reason = "Libbox initialization failed: ${LogRedactor.redact(unwrapReflectiveError(e).message).take(80)}"
+                validOriginalIndexes.forEach { originalIndex ->
+                    val profile = profiles[originalIndex]
+                    results[originalIndex] = LatencyMeasurement(
+                        profile.subscriptionId, profile.connectionFingerprint(), LatencyStatus.FAILED,
+                        null, reason, clockMs()
+                    )
+                    onResult(results[originalIndex]!!)
+                }
+                onProgress(profiles.size, profiles.size)
+                return@withHeadlessProbeLease results.filterNotNull()
+            }
+
+            val validProfiles = validOriginalIndexes.map { profiles[it] }
+            val ports = mutableListOf<Int>()
+            var service: Any? = null
+            try {
+                repeat(validProfiles.size) {
+                    val port = reserveEphemeralPort() ?: error("Unable to reserve a unique local probe port.")
+                    ports += port
+                }
+                val platformClass = Class.forName(PLATFORM_INTERFACE_CLASS)
+                val headlessPlatform = Proxy.newProxyInstance(
+                    platformClass.classLoader,
+                    arrayOf(platformClass)
+                ) { _, method, _ ->
+                    when (method.name) {
+                        "usePlatformAutoDetectInterfaceControl", "usePlatformDefaultInterfaceMonitor",
+                        "usePlatformInterfaceGetter", "useProcFS", "underNetworkExtension", "includeAllNetworks" -> false
+                        "packageNameByUid" -> ""
+                        "uidByPackageName", "findConnectionOwner" -> -1
+                        "toString" -> "VisionHeadlessBatchProbePlatform"
+                        "hashCode" -> System.identityHashCode(this)
+                        "equals" -> false
+                        else -> null
+                    }
+                }
+                val configJson = configBuilder.buildLatencyProbeBatchConfig(validProfiles, ports, settings)
+                service = libboxClass.getMethod("newService", String::class.java, platformClass)
+                    .invoke(null, configJson, headlessPlatform)
+                    ?: error("Core rejected the multi-profile diagnostic configuration.")
+                service.javaClass.getMethod("start").invoke(service)
+
+                val readiness = coroutineScope {
+                    ports.map { port -> async(Dispatchers.IO) { waitForLoopbackPortReady(port, 3_000L) } }.awaitAll()
+                }
+                val readyIndexes = validProfiles.indices.filter { readiness[it] }
+                validProfiles.indices.filterNot { readiness[it] }.forEach { validIndex ->
+                    val originalIndex = validOriginalIndexes[validIndex]
+                    val profile = profiles[originalIndex]
+                    val result = LatencyMeasurement(
+                        profile.subscriptionId, profile.connectionFingerprint(), LatencyStatus.TIMEOUT, null,
+                        "Local probe inbound did not become ready", clockMs()
+                    )
+                    results[originalIndex] = result
+                    onResult(result)
+                    completed.incrementAndGet()
+                    onProgress(completed.get(), profiles.size)
+                }
+
+                val nextIndex = AtomicInteger(0)
+                val workerCount = safeConcurrency.coerceAtMost(readyIndexes.size.coerceAtLeast(1))
+                val probeDispatcher = Dispatchers.IO.limitedParallelism(workerCount)
+                coroutineScope {
+                    repeat(workerCount) {
+                        launch(probeDispatcher) {
+                            while (true) {
+                                if (LibboxRuntime.currentMode() == LibboxLeaseMode.FAULTED) break
+                                val offset = nextIndex.getAndIncrement()
+                                if (offset >= readyIndexes.size) break
+                                val validIndex = readyIndexes[offset]
+                                val originalIndex = validOriginalIndexes[validIndex]
+                                val profile = profiles[originalIndex]
+                                val outcome = probeThroughLocalHttpProxy(
+                                    proxyPort = ports[validIndex],
+                                    testUrl = testUrl,
+                                    timeoutMs = safeTimeoutMs
+                                )
+                                val measurement = when (outcome) {
+                                    is LatencyTestOutcome.Success -> LatencyMeasurement(
+                                        profile.subscriptionId, profile.connectionFingerprint(), LatencyStatus.SUCCESS,
+                                        outcome.latencyMs.coerceAtLeast(1), null, clockMs()
+                                    )
+                                    is LatencyTestOutcome.Failure -> LatencyMeasurement(
+                                        profile.subscriptionId, profile.connectionFingerprint(), outcome.status,
+                                        null, outcome.reason, clockMs()
+                                    )
+                                }
+                                results[originalIndex] = measurement
+                                onResult(measurement)
+                                completed.incrementAndGet()
+                                onProgress(completed.get(), profiles.size)
+                            }
+                        }
+                    }
+                }
+
+                // A quarantined native runtime can stop remaining work. Preserve already completed
+                // results and report every not-yet-tested candidate honestly.
+                validOriginalIndexes.forEach { originalIndex ->
+                    if (results[originalIndex] == null) {
+                        val profile = profiles[originalIndex]
+                        val result = LatencyMeasurement(
+                            profile.subscriptionId, profile.connectionFingerprint(), LatencyStatus.FAILED,
+                            null,
+                            "Probe was not completed because the native runtime was quarantined or unavailable.",
+                            clockMs()
+                        )
+                        results[originalIndex] = result
+                        onResult(result)
+                        completed.incrementAndGet()
+                        onProgress(completed.get(), profiles.size)
+                    }
+                }
+                results.filterNotNull()
+            } finally {
+                var closeFailure: Throwable? = null
+                withContext(NonCancellable) {
+                    service?.let { svc ->
+                        try {
+                            svc.javaClass.getMethod("close").invoke(svc)
+                        } catch (t: Throwable) {
+                            closeFailure = t
+                        }
+                    }
+                    ports.forEach { reservedPorts.remove(it) }
+                }
+                closeFailure?.let {
+                    throw LibboxCleanupException(
+                        "Headless batch Libbox service could not be confirmed closed; native runtime quarantined.",
+                        unwrapReflectiveError(it)
+                    )
+                }
+            }
+        }
+
+        val measurements = batchResult.getOrElse { error ->
+            if (error is CancellationException) throw error
+            val reason = LogRedactor.redact(error.message ?: "Unable to start the shared Libbox test engine")
+            validOriginalIndexes.forEach { originalIndex ->
+                if (results[originalIndex] == null) {
+                    val profile = profiles[originalIndex]
+                    val result = LatencyMeasurement(
+                        profile.subscriptionId, profile.connectionFingerprint(), LatencyStatus.FAILED,
+                        null, reason, clockMs()
+                    )
+                    results[originalIndex] = result
+                    onResult(result)
+                }
+            }
+            results.filterNotNull()
+        }
+        onProgress(measurements.size, profiles.size)
+        return measurements
     }
 
     private suspend fun measureViaHeadlessLibbox(

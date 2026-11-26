@@ -90,7 +90,9 @@ fun SettingsScreen(
     onToggleSavedTorBridge: (String, Boolean) -> Unit,
     onDeleteSavedTorBridge: (String) -> Unit,
     onClearAllTorBridges: () -> Unit,
-    onReconnectVpn: () -> Unit
+    onReconnectVpn: () -> Unit,
+    onRunSpeedTest: () -> Unit,
+    onCancelSpeedTest: () -> Unit
 ) {
     val isPersian = uiState.isPersian
     val settings = uiState.settings
@@ -144,6 +146,33 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = VisionColors.TextSecondary
             )
+            var latencyUrlDraft by remember(settings.latencyTestUrl) { mutableStateOf(settings.latencyTestUrl) }
+            OutlinedTextField(
+                value = latencyUrlDraft,
+                onValueChange = { latencyUrlDraft = it },
+                label = { Text(if (isPersian) "نشانی HTTPS تست تأخیر" else "HTTPS delay-test URL") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            val latencyUrlValid = runCatching {
+                val parsed = java.net.URI(latencyUrlDraft.trim())
+                parsed.scheme.equals("https", ignoreCase = true) &&
+                    !parsed.host.isNullOrBlank() && parsed.userInfo == null &&
+                    parsed.toString().length <= 512
+            }.getOrDefault(false)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = if (isPersian) "فقط HTTPS معتبر؛ درخواست از مسیر پروفایل آزمایش‌شده عبور می‌کند."
+                    else "HTTPS only. Requests use each candidate's own tested proxy route.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (latencyUrlValid) VisionColors.TextSecondary else VisionColors.AmberWarning,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(
+                    enabled = latencyUrlValid && latencyUrlDraft.trim() != settings.latencyTestUrl,
+                    onClick = { onUpdateSettings { it.copy(latencyTestUrl = latencyUrlDraft.trim()) } }
+                ) { Text(if (isPersian) "ذخیره" else "Save") }
+            }
             Slider(
                 value = probeTimeout.toFloat(),
                 onValueChange = { value ->
@@ -155,15 +184,212 @@ fun SettingsScreen(
                 valueRange = 1f..30f,
                 steps = 28
             )
+            var concurrencyDraft by remember(settings.latencyProbeConcurrency) {
+                mutableStateOf(settings.latencyProbeConcurrency.coerceIn(1, 100))
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(if (isPersian) "تعداد تست هم‌زمان" else "Concurrent profile tests", modifier = Modifier.weight(1f))
+                Text(concurrencyDraft.toString(), color = VisionColors.CyanHighlight)
+            }
+            Slider(
+                value = concurrencyDraft.toFloat(),
+                onValueChange = { concurrencyDraft = it.roundToInt().coerceIn(1, 100) },
+                onValueChangeFinished = { onUpdateSettings { it.copy(latencyProbeConcurrency = concurrencyDraft) } },
+                valueRange = 1f..100f,
+                steps = 98
+            )
             Text(
-                text = if (isPersian) {
-                    "آزمون‌های بومی Libbox در این نسخه برای ایمنی چرخه‌عمر، یکی‌یکی اجرا می‌شوند (هم‌زمانی مؤثر: ۱)."
-                } else {
-                    "Native Libbox profile probes remain serialized for process-lifecycle safety (effective concurrency: 1)."
-                },
+                if (isPersian) "هر آزمون در یک نمونه مشترک Libbox انجام می‌شود؛ فقط درخواست‌های HTTPS به‌صورت موازی اجرا می‌شوند، نه صد نمونه از موتور بومی."
+                else "All candidates share one headless Libbox instance. HTTPS requests run concurrently; native Go runtimes are not spawned per profile.",
                 style = MaterialTheme.typography.labelSmall,
                 color = VisionColors.TextSecondary
             )
+            var sizeDraft by remember(settings.speedTestDownloadSizeMiB) {
+                mutableStateOf(settings.speedTestDownloadSizeMiB.coerceIn(1, 100))
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(if (isPersian) "حجم دانلود تست سرعت" else "Speed-test download size", modifier = Modifier.weight(1f))
+                Text("$sizeDraft MiB", color = VisionColors.CyanHighlight)
+            }
+            Slider(
+                value = sizeDraft.toFloat(),
+                onValueChange = { sizeDraft = it.roundToInt().coerceIn(1, 100) },
+                onValueChangeFinished = { onUpdateSettings { it.copy(speedTestDownloadSizeMiB = sizeDraft) } },
+                valueRange = 1f..100f,
+                steps = 98
+            )
+            Text(
+                "Manual speed test only. This amount is streamed through the active VPN tunnel; Smart Connect never downloads this payload. Large values use mobile data.",
+                style = MaterialTheme.typography.labelSmall,
+                color = VisionColors.AmberWarning
+            )
+            GradientPrimaryButton(
+                text = if (isPersian) "آزمایش سرعت تونل فعال" else "Run Speed Test Through Active VPN",
+                enabled = uiState.connectionState == com.visionvpn.app.data.model.VpnConnectionState.CONNECTED && !uiState.isSpeedTestRunning,
+                onClick = onRunSpeedTest,
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (uiState.isSpeedTestRunning) {
+                val progress = uiState.speedTestProgress
+                val fraction = progress?.let { (done, total) -> if (total > 0L) done.toFloat() / total.toFloat() else 0f } ?: 0f
+                LinearProgressIndicator(progress = { fraction.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+                Text(
+                    text = progress?.let { (done, total) -> "Downloaded %.1f / %.1f MiB".format(done / 1048576.0, total / 1048576.0) } ?: "Preparing speed test…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = VisionColors.TextSecondary
+                )
+                TextButton(onClick = onCancelSpeedTest) { Text("Cancel speed test") }
+            }
+        }
+
+        // Profiles & Subscriptions: apply results without forcing a list reorder when disabled.
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            Text("Profiles & Subscriptions", style = MaterialTheme.typography.titleMedium)
+            SettingsSwitchRow(
+                title = if (isPersian) "مرتب‌سازی خودکار بعد از تست" else "Auto-sort after latency tests",
+                checked = settings.autoSortAfterLatencyTest,
+                onCheckedChange = { enabled -> onUpdateSettings { it.copy(autoSortAfterLatencyTest = enabled) } }
+            )
+            Text(
+                "When disabled, measured delay/status is saved but your current profile order is preserved.",
+                style = MaterialTheme.typography.labelSmall,
+                color = VisionColors.TextSecondary
+            )
+        }
+
+        // Smart Connect settings used by the real Sing-box urltest group.
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            Text("Smart Connect", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Only profiles selected on Home are eligible. The URLTest group includes up to the configured candidate count in current profile order; extra selected profiles are not rotated into later rounds.",
+                style = MaterialTheme.typography.bodySmall,
+                color = VisionColors.TextSecondary
+            )
+            var intervalDraft by remember(settings.smartConnectIntervalSeconds) {
+                mutableStateOf(settings.smartConnectIntervalSeconds.coerceIn(15, 3600))
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Test interval", modifier = Modifier.weight(1f))
+                Text("$intervalDraft s", color = VisionColors.CyanHighlight)
+            }
+            Slider(
+                value = intervalDraft.toFloat(),
+                onValueChange = { intervalDraft = it.roundToInt().coerceIn(15, 3600) },
+                onValueChangeFinished = { onUpdateSettings { it.copy(smartConnectIntervalSeconds = intervalDraft) } },
+                valueRange = 15f..3600f,
+                steps = 238
+            )
+            var candidatesDraft by remember(settings.smartConnectCandidateCount) {
+                mutableStateOf(settings.smartConnectCandidateCount.coerceIn(2, 100))
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Candidates in URLTest group (2–100)", modifier = Modifier.weight(1f))
+                Text(candidatesDraft.toString(), color = VisionColors.CyanHighlight)
+            }
+            Slider(
+                value = candidatesDraft.toFloat(),
+                onValueChange = { candidatesDraft = it.roundToInt().coerceIn(2, 100) },
+                onValueChangeFinished = { onUpdateSettings { it.copy(smartConnectCandidateCount = candidatesDraft) } },
+                valueRange = 2f..100f,
+                steps = 97
+            )
+            var toleranceDraft by remember(settings.smartConnectToleranceMs) {
+                mutableStateOf(settings.smartConnectToleranceMs.coerceIn(1, 500))
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Switch tolerance", modifier = Modifier.weight(1f))
+                Text("$toleranceDraft ms", color = VisionColors.CyanHighlight)
+            }
+            Slider(
+                value = toleranceDraft.toFloat(),
+                onValueChange = { toleranceDraft = it.roundToInt().coerceIn(1, 500) },
+                onValueChangeFinished = { onUpdateSettings { it.copy(smartConnectToleranceMs = toleranceDraft) } },
+                valueRange = 1f..500f,
+                steps = 49
+            )
+            Text(
+                "Smart Connect is supported for a single imported proxy route in this build. It pauses/rejects unsupported local-engine chains instead of silently changing their meaning.",
+                style = MaterialTheme.typography.labelSmall,
+                color = VisionColors.AmberWarning
+            )
+        }
+
+        // Connection security options verified against the pinned upstream Sing-box v1.10.7 schema.
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            Text("Connection Security", style = MaterialTheme.typography.titleMedium)
+            SettingsSwitchRow(
+                title = "Automatic ECH (TLS Encrypted Client Hello)",
+                checked = settings.echAutoEnabled,
+                onCheckedChange = { enabled -> onUpdateSettings { it.copy(echAutoEnabled = enabled) } }
+            )
+            Text(
+                "ECH auto-discovery is emitted only for TLS-capable non-REALITY outbounds. The core may discover ECH config through DNS; enabling this option does not guarantee the server negotiates ECH.",
+                style = MaterialTheme.typography.labelSmall,
+                color = VisionColors.TextSecondary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "TLS Fragmentation, Fragment Connection and Hiddify Finalmask are not available in the currently bundled upstream Sing-box v1.10.7 core. They are intentionally not exposed as fake switches; the Hiddify fork requires a separate native-core build and license/dependency review.",
+                style = MaterialTheme.typography.labelSmall,
+                color = VisionColors.AmberWarning
+            )
+        }
+
+        // VPN/TUN: keep MTU within interoperable Android/mobile range.
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            Text("VPN / TUN", style = MaterialTheme.typography.titleMedium)
+            var mtuDraft by remember(settings.mtu) { mutableStateOf(settings.mtu.coerceIn(1280, 1500)) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("TUN MTU", modifier = Modifier.weight(1f))
+                Text(mtuDraft.toString(), color = VisionColors.CyanHighlight)
+            }
+            Slider(
+                value = mtuDraft.toFloat(),
+                onValueChange = { mtuDraft = it.roundToInt().coerceIn(1280, 1500) },
+                onValueChangeFinished = { onUpdateSettings { it.copy(mtu = mtuDraft) } },
+                valueRange = 1280f..1500f,
+                steps = 219
+            )
+            Text("Default 1500. Jumbo-frame MTU values are avoided because most mobile/Wi-Fi paths do not support 9000-byte packets end-to-end.", style = MaterialTheme.typography.labelSmall, color = VisionColors.TextSecondary)
+        }
+
+        // Logs & Diagnostics: this value is consumed by the generated Sing-box log config.
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            Text("Logs & Diagnostics", style = MaterialTheme.typography.titleMedium)
+            Text("Core log level", style = MaterialTheme.typography.bodyMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                listOf("error", "warn", "info", "debug", "trace").forEach { level ->
+                    FilterChip(
+                        selected = settings.coreLogLevel == level,
+                        onClick = { onUpdateSettings { it.copy(coreLogLevel = level) } },
+                        label = { Text(level.uppercase()) }
+                    )
+                }
+            }
+            Text(
+                "Debug/Trace may include connection metadata. VisionVPN still redacts credentials and private material; use verbose logs only for troubleshooting.",
+                style = MaterialTheme.typography.labelSmall,
+                color = VisionColors.AmberWarning
+            )
+        }
+
+        // Inbound / Local Proxy: do not expose a fake toggle for a listener that is not built.
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            Text("Inbound / Local Proxy", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "This Android build currently runs full-device VpnService/TUN plus a loopback-only diagnostic inbound. Standalone LAN SOCKS/HTTP sharing is not enabled; no unauthenticated network listener is exposed.",
+                style = MaterialTheme.typography.bodySmall,
+                color = VisionColors.TextSecondary
+            )
+        }
+
+        // About: display the exact app/core versions used in this build.
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            Text("About", style = MaterialTheme.typography.titleMedium)
+            Text("VisionVPN ${com.visionvpn.app.BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium)
+            Text("Sing-box / Libbox v1.10.7 • Android VpnService", style = MaterialTheme.typography.labelSmall, color = VisionColors.TextSecondary)
         }
 
         // A. VPN Routing & Exit Provider (Synced with Chain Manager)

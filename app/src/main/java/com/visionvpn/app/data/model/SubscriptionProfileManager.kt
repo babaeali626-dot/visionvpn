@@ -281,33 +281,26 @@ object SubscriptionProfileManager {
      *
      * Profiles from separate subscriptions are NEVER merged into one global latency-sorted list.
      */
-    fun applyLatencyResultsAndSortPerSubscription(
+    fun applyLatencyResultsWithoutSorting(
         profiles: List<ProxyProfile>,
-        subscriptions: List<SubscriptionSource>,
         measurements: List<LatencyMeasurement>
     ): List<ProxyProfile> {
-        // Keep only the latest measurement per (subscriptionId, fingerprint)
+        // Keep only the latest measurement per (subscriptionId, fingerprint).
         val latestByKey = measurements
             .groupBy { it.subscriptionId to it.fingerprint }
             .mapValues { (_, list) -> list.maxBy { it.testedAtMs } }
 
-        val updated = profiles.map { profile ->
+        return profiles.map { profile ->
             val key = profile.subscriptionId to profile.connectionFingerprint()
             val measurement = latestByKey[key] ?: return@map profile
-            // Reject stale results older than what is already stored for this profile
-            if (measurement.testedAtMs < profile.latencyTestedAtMs) {
-                return@map profile
-            }
+            // Reject stale results older than what is already stored for this profile.
+            if (measurement.testedAtMs < profile.latencyTestedAtMs) return@map profile
             val validLatency = if (measurement.status == LatencyStatus.SUCCESS && (measurement.latencyMs ?: 0) > 0) {
                 measurement.latencyMs
-            } else {
-                null
-            }
+            } else null
             val effectiveStatus = if (measurement.status == LatencyStatus.SUCCESS && validLatency == null) {
                 LatencyStatus.FAILED
-            } else {
-                measurement.status
-            }
+            } else measurement.status
             profile.copy(
                 latencyMs = validLatency,
                 latencyStatus = effectiveStatus,
@@ -315,12 +308,17 @@ object SubscriptionProfileManager {
                 latencyTestedAtMs = measurement.testedAtMs
             )
         }
+    }
 
-        // Reassemble strictly per-group, sorting each subscription independently
+    fun applyLatencyResultsAndSortPerSubscription(
+        profiles: List<ProxyProfile>,
+        subscriptions: List<SubscriptionSource>,
+        measurements: List<LatencyMeasurement>
+    ): List<ProxyProfile> {
+        val updated = applyLatencyResultsWithoutSorting(profiles, measurements)
+        // Reassemble strictly per-group, sorting each subscription independently.
         val groups = groupProfiles(updated, subscriptions)
-        return groups.flatMap { group ->
-            sortGroupByLatency(group.profiles)
-        }
+        return groups.flatMap { group -> sortGroupByLatency(group.profiles) }
     }
 
     /**

@@ -228,4 +228,98 @@ class RoutingGraphAndConfigBuilderTest {
             graph.effectiveFinalExitProvider
         )
     }
+
+    @Test
+    fun `Smart Connect builds URLTest only from explicitly selected validated profiles`() {
+        val second = entryVless.copy(
+            id = "p-selected-2",
+            name = "Selected-2",
+            server = "second.example.com",
+            sni = "second.example.com",
+            rawUri = "vless://11111111-1111-1111-1111-111111111111@second.example.com:443?security=tls"
+        )
+        val unselected = entryVless.copy(
+            id = "p-not-selected",
+            name = "Not-Selected",
+            server = "other.example.com",
+            sni = "other.example.com",
+            rawUri = "vless://11111111-1111-1111-1111-111111111111@other.example.com:443?security=tls"
+        )
+        val graph = RoutingGraph.build(entryVless, ChainConfig(), listOf(entryVless)).getOrThrow()
+        val settings = AppSettings(
+            smartConnectEnabled = true,
+            smartConnectProfileIds = setOf(entryVless.id, second.id),
+            smartConnectIntervalSeconds = 60,
+            smartConnectCandidateCount = 20,
+            smartConnectToleranceMs = 50
+        )
+
+        val config = json.parseToJsonElement(
+            builder.buildSingBoxConfig(graph, settings, listOf(entryVless, second, unselected))
+        ).jsonObject
+        val outbounds = config["outbounds"]!!.jsonArray.map { it.jsonObject }
+        val group = outbounds.single { it["type"]?.jsonPrimitive?.content == "urltest" }
+        val members = group["outbounds"]!!.jsonArray.map { it.jsonPrimitive.content }
+
+        assertEquals(2, members.size)
+        assertEquals("60s", group["interval"]!!.jsonPrimitive.content)
+        assertEquals(50, group["tolerance"]!!.jsonPrimitive.content.toInt())
+        assertEquals(ConfigBuilder.SMART_CONNECT_GROUP_TAG, config["route"]!!.jsonObject["final"]!!.jsonPrimitive.content)
+        assertTrue(outbounds.none { it["tag"]?.jsonPrimitive?.content?.contains("p-not-selected") == true })
+        assertTrue(members.all { tag -> outbounds.any { it["tag"]?.jsonPrimitive?.content == tag } })
+    }
+
+    @Test
+    fun `Shared batch probe config creates one isolated loopback inbound per candidate`() {
+        val second = entryVless.copy(
+            id = "p-batch-2",
+            name = "Batch-2",
+            server = "batch-2.example.com",
+            sni = "batch-2.example.com",
+            rawUri = "vless://11111111-1111-1111-1111-111111111111@batch-2.example.com:443?security=tls"
+        )
+        val config = json.parseToJsonElement(
+            builder.buildLatencyProbeBatchConfig(listOf(entryVless, second), listOf(20081, 20082))
+        ).jsonObject
+        val inbounds = config["inbounds"]!!.jsonArray.map { it.jsonObject }
+        val rules = config["route"]!!.jsonObject["rules"]!!.jsonArray.map { it.jsonObject }
+        val candidateOutbounds = config["outbounds"]!!.jsonArray.map { it.jsonObject }
+            .filter { it["tag"]?.jsonPrimitive?.content?.startsWith("probe-candidate-") == true }
+
+        assertEquals(2, inbounds.size)
+        assertEquals(setOf(20081, 20082), inbounds.map { it["listen_port"]!!.jsonPrimitive.content.toInt() }.toSet())
+        assertEquals(2, candidateOutbounds.size)
+        assertTrue(rules.any {
+            it["inbound"]?.jsonPrimitive?.content == "probe-in-0" &&
+                it["outbound"]?.jsonPrimitive?.content == "probe-candidate-0"
+        })
+        assertTrue(rules.any {
+            it["inbound"]?.jsonPrimitive?.content == "probe-in-1" &&
+                it["outbound"]?.jsonPrimitive?.content == "probe-candidate-1"
+        })
+    }
+
+    @Test
+    fun `ECH auto is emitted only when enabled and MTU default is mobile-safe`() {
+        val graph = RoutingGraph.build(entryVless, ChainConfig(), listOf(entryVless)).getOrThrow()
+        val disabled = json.parseToJsonElement(builder.buildSingBoxConfig(graph, AppSettings())).jsonObject
+        val enabled = json.parseToJsonElement(
+            builder.buildSingBoxConfig(graph, AppSettings(echAutoEnabled = true))
+        ).jsonObject
+        val disabledOutbound = disabled["outbounds"]!!.jsonArray.map { it.jsonObject }
+            .single { it["tag"]?.jsonPrimitive?.content == "hop-0-entry" }
+        val enabledOutbound = enabled["outbounds"]!!.jsonArray.map { it.jsonObject }
+            .single { it["tag"]?.jsonPrimitive?.content == "hop-0-entry" }
+        assertNull(disabledOutbound["tls"]?.jsonObject?.get("ech"))
+        assertEquals(true, enabledOutbound["tls"]!!.jsonObject["ech"]!!.jsonObject["enabled"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals(1500, AppSettings().mtu)
+        val verboseConfig = json.parseToJsonElement(
+            builder.buildSingBoxConfig(graph, AppSettings(coreLogLevel = "debug"))
+        ).jsonObject
+        assertEquals("debug", verboseConfig["log"]!!.jsonObject["level"]!!.jsonPrimitive.content)
+        val tun = enabled["inbounds"]!!.jsonArray.map { it.jsonObject }
+            .single { it["type"]?.jsonPrimitive?.content == "tun" }
+        assertEquals(1500, tun["mtu"]!!.jsonPrimitive.content.toInt())
+    }
+
 }

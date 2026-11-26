@@ -36,7 +36,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -89,10 +88,9 @@ fun ProfilesScreen(
     var tlsSecurityProfile by remember { mutableStateOf<ProxyProfile?>(null) }
     val collapsedGroups = remember { mutableStateMapOf<String, Boolean>() }
 
-    // Cancel active proxy latency probes when leaving the screen so no test cores linger
-    DisposableEffect(Unit) {
-        onDispose { onCancelLatencyTests() }
-    }
+    // Latency-test ownership belongs to VisionViewModel, not this Composable.
+    // Navigating to Home/Chain/Settings must not cancel an active batch; only the
+    // explicit Cancel action above is allowed to stop it.
 
     Column(
         modifier = Modifier
