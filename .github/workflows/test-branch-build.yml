@@ -5,6 +5,7 @@ on:
     branches: [ test ]
     paths:
       - '.github/workflows/test-branch-build.yml'
+      - '.github/workflows/android-build.yml'
       - 'app/**'
       - 'build.gradle.kts'
       - 'settings.gradle.kts'
