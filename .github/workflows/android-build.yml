@@ -67,6 +67,10 @@ jobs:
           export CGO_LDFLAGS="-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"
           mkdir -p app/libs
           rm -rf /tmp/hiddify-core
+          # Hiddify Core v5.9.15 declares ray2sing with an SSH URL in .gitmodules.
+          # GitHub-hosted runners have no SSH key for this public dependency, so use HTTPS.
+          git config --global --add url."https://github.com/".insteadOf "git@github.com:"
+          git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/"
           git clone --depth 1 --single-branch --recurse-submodules --branch "${HIDDIFY_CORE_VERSION}" https://github.com/hiddify/hiddify-core.git /tmp/hiddify-core
           echo "hiddify-core-commit=$(git -C /tmp/hiddify-core rev-parse HEAD)" >> /tmp/resolved-commits.txt
           cd /tmp/hiddify-core
