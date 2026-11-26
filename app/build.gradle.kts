@@ -35,7 +35,13 @@ val torAndroidNativeAar by configurations.creating {
 
 android {
     namespace = "com.visionvpn.app"
-    compileSdk = 37
+    // Compose BOM 2026.11.01 requires Android API 37.1.
+    // Keep targetSdk separate so this does not opt the app into newer runtime behavior.
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 1
+        }
+    }
     ndkVersion = "30.0.16248370"
 
     defaultConfig {
