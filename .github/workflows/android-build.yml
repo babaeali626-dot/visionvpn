@@ -38,7 +38,7 @@ jobs:
       - name: Set up Android SDK & NDK r30 (16 KB Default Alignment)
         uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-37 build-tools;36.0.0 ndk;30.0.16248370"
+          packages: "platform-tools platforms;android-37.0 build-tools;37.0.0 ndk;30.0.16248370"
 
       - name: Set up Go required by Hiddify Core
         uses: actions/setup-go@v7
