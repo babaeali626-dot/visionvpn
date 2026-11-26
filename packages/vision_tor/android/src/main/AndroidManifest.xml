@@ -1,0 +1,10 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application>
+        <!-- This is Tor's native daemon service, not a second VPNService. -->
+        <service
+            android:name="org.torproject.jni.TorService"
+            android:exported="false"
+            android:stopWithTask="false" />
+    </application>
+</manifest>

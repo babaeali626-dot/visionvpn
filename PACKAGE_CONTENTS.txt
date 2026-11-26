@@ -1,0 +1,5 @@
+VisionVPN-Hiddify-Tor-Overlay-v5.9.15
+
+This archive is an overlay pack. It does not include the upstream Hiddify source tree, hiddify-core submodule, compiled native binaries, APK, keystore or Git repository history.
+
+Apply it only to an extracted Hiddify v5.9.15 checkout, following INTEGRATION_CHECKLIST_FA.md. Do not upload it as if it were a complete buildable app repository.

@@ -1,0 +1,46 @@
+name: Android CI
+on:
+  push:
+    branches: [main, master, vision-vpn]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android-ci:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.5'
+          channel: stable
+          cache: true
+      - name: Install project and Core dependencies
+        run: make android-prepare
+      - name: Dart format
+        run: dart format --output=none --set-exit-if-changed lib test packages/vision_tor/lib packages/vision_tor/test
+      - name: Flutter analyze
+        run: flutter analyze
+      - name: App unit tests
+        run: flutter test
+      - name: Tor plugin unit tests
+        working-directory: packages/vision_tor
+        run: flutter test
+      - name: Verify Tor dependency and notices are declared
+        run: python3 scripts/check_tor_notices.py
+      - name: Build debug APKs
+        run: flutter build apk --debug --target lib/main.dart --split-per-abi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vision-vpn-android-ci-${{ github.run_number }}
+          path: build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,33 @@
+group 'net.visionvpn.tor'
+version '0.1.0'
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+android {
+    namespace 'net.visionvpn.tor'
+    compileSdkVersion 36
+
+    defaultConfig {
+        minSdkVersion 24
+    }
+}
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib"
+    implementation 'androidx.core:core:1.15.0'
+    implementation 'info.guardianproject:tor-android:0.4.9.17'
+    implementation 'info.guardianproject:jtorctl:0.4.5.7'
+}

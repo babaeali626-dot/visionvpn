@@ -1,0 +1,32 @@
+name: Code Analysis
+on:
+  pull_request:
+  push:
+    branches: [main, master, vision-vpn]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  analysis:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.5'
+          channel: stable
+          cache: true
+      - run: make android-prepare
+      - run: dart format --output=none --set-exit-if-changed lib test packages/vision_tor/lib packages/vision_tor/test
+      - run: flutter analyze
+      - run: flutter test
+      - name: Verify Tor dependency and notices are declared
+        run: python3 scripts/check_tor_notices.py
+      - name: Check patch whitespace
+        run: git diff --check

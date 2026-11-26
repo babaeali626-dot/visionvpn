@@ -1,37 +1,7 @@
-# VisionVPN (Android • Kotlin • Jetpack Compose • Hiddify Core v5.9.15)
+# Vision VPN — Hiddify Tor Integration Overlay
 
-A production-structured, security-hardened Android VPN client built with **Kotlin**, **Jetpack Compose**, **Material 3**, and **Gradle Kotlin DSL**, styled in a **Vision UI Dark** glassmorphic theme with full **English (LTR)** and **Persian / Vazirmatn (RTL)** support.
+This ZIP contains an Android Tor integration feature pack for a Hiddify v5.9.15 checkout: an Android Flutter plugin, a Tor dashboard UI, the Vision VPN logo, SOCKS outbound fragments, four GitHub Actions workflows, tests, and documentation.
 
-## Core Architecture & Security Guarantees
-- **Hiddify Core (`v5.9.15`):** Built from [hiddify/hiddify-core](https://github.com/hiddify/hiddify-core) using its Android AAR target, with 16 KB ELF page alignment, the generated `com.hiddify.core.libbox` API, Android stack compatibility enabled, reflected API checks in CI, default-network monitoring, socket protection (`VpnService.protect`), and Clash API WebSocket traffic telemetry (`ws://127.0.0.1:9090/traffic`). Hiddify Core v5.9.15 is based on Hiddify's Sing-box v1.13.0 fork.
-- **True Sequential Multi-Hop Routing (`RoutingGraph`):** Supports verified chains such as `VLESS → WARP → Psiphon`, `VLESS → Psiphon → WARP`, `VLESS → Tor`, `VLESS → Custom Exit`, `Tor → Server`, and standalone `Tor` or `Psiphon` modes. Every local engine hop receives its own dedicated Sing-box loopback inbound (`mixed-upstream-<idx>`) bound strictly to its immediate predecessor tag, while circular or protocol-incompatible topologies (e.g., `Tor → WARP` UDP-over-TCP) are explicitly rejected.
-- **First-Class Built-In Tor & Psiphon Exit Modes:** Selectable directly under **Settings → VPN Routing & Exit Provider** (synchronized with Chain Manager) without complex setup:
-  - **Tor Mode + Bridge Manager:** Powered by [guardianproject/tor-android](https://github.com/guardianproject/tor-android) (`0.4.9.17`, native-only AAR extraction of `libtor.so`; AAR classes are not added to the app classpath) + standalone `liblyrebird.so` (`obfs4`, `meek_lite`, `webtunnel`) and `libsnowflake.so` (`snowflake`). Supports direct Tor, built-in transports, and validated single/multi-line custom bridges with real `Bootstrapped 100%` readiness checks, no direct fallback in Bridge Mode, and zero bridge-secret logging.
-  - **Psiphon Mode + Full Country Selector:** Powered by [Psiphon-Labs/psiphon-tunnel-core](https://github.com/Psiphon-Labs/psiphon-tunnel-core) with a searchable official ISO 3166-1 alpha-2 country list (`AUTO` + 35+ countries), structured JSON notice parsing (`Connecting` / `Established` / `Degraded` / `Failed`), and distinction between requested vs. connected tunnel state.
-- **Leak Prevention & Hardening:**
-  - **Fail-Closed Mode & Tor UDP Blocking:** Blocks raw UDP on TUN when exiting through Tor, prevents silent Direct fallback on engine failure, and suppresses ISP/direct DNS in strict privacy modes.
-  - **IPv6 Leak Protection:** Always captures `::/0` on TUN and blocks IPv6 + `AAAA` queries when `Block IPv6 (Leak-Proof)` is active.
-  - **At-Rest Encryption:** Proxy credentials, WireGuard private keys, WARP tokens, subscription URLs, and custom Tor bridges are encrypted via Android Keystore **AES-256-GCM** (`CryptoBox.kt`).
-  - **Network Security:** Global cleartext traffic is disabled via `network_security_config.xml` (loopback `127.0.0.1` only for Clash API).
+**This is not a complete Hiddify source tree or an APK.** The workspace could not resolve GitHub during this session, so the official Hiddify source and its Core submodule could not be downloaded or baseline-built. Apply this overlay to the exact upstream checkout using `INTEGRATION_CHECKLIST_FA.md`.
 
-## Production Release Signing
-Release signing is strictly separated from Debug signing in `app/build.gradle.kts`. Configure these repository secrets in GitHub (**Settings → Secrets and variables → Actions**):
-- `VISION_KEYSTORE_BASE64`: Base64-encoded `.jks` release keystore
-- `VISION_KEYSTORE_PASSWORD`: Keystore password
-- `VISION_KEY_ALIAS`: Signing key alias
-- `VISION_KEY_PASSWORD`: Signing key password
-
-## Push to GitHub & Download the Auto-Built APK
-```bash
-cd vision-vpn
-git init -b main
-git add .
-git commit -m "VisionVPN v1.2.0: hardened multi-hop, Tor bridges, Psiphon regions & tests"
-git remote add origin https://github.com/<YOUR_USERNAME>/VisionVPN.git
-git push -u origin main
-```
-Open the **Actions** tab on GitHub, select **Build & Test VisionVPN Android APK**, wait for unit tests and builds to finish, and download **VisionVPN-Release-APK** (or **VisionVPN-Debug-APK**) from **Artifacts**.
-
-## Revision 10 corrective patch
-
-The current Hiddify Core / Balancer / TLS security update and its validation boundary are documented in `docs/revision11/IMPLEMENTATION_REPORT.md`. The app replaces Smart Connect's former `urltest` configuration with the native Hiddify `balancer` outbound and exposes Round robin, Consistent hash, and Sticky session. Native engine monitoring is configured for balancer health checks. The profile-list value is still a separately measured HTTPS RTT, not ICMP and not yet the live per-outbound gRPC monitor stream. The offline environment did not produce an APK; run GitHub Actions for the AAR, unit tests, and Android build. Device-specific crash resolution remains unconfirmed until the new binary is tested on the Redmi Android 16 device with a full tombstone.
+The Tor engine uses Guardian Project's `tor-android` AAR, not copied SlipNet code. Direct Tor and direct bridge relays are enabled. obfs4, Snowflake and Meek remain disabled until real compatible Android PT binaries and their licenses are added. The Tor daemon exposes a loopback SOCKS5 listener only. Full Core routing is not yet applied to Hiddify's code generator; the supplied Core JSON files are integration fragments and must be checked against the pinned Core schema.
