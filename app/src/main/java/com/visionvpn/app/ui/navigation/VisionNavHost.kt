@@ -125,7 +125,7 @@ fun VisionAppScaffold(
                         onOpenChainManager = { navigateToTab(VisionTab.CHAIN) },
                         onOpenProfiles = { navigateToTab(VisionTab.PROFILES) },
                         onUpdateSettings = viewModel::updateSettings,
-                        onSetSmartConnectEnabled = viewModel::setSmartConnectEnabled
+                        onSetBalancerEnabled = viewModel::setBalancerEnabled
                     )
                 }
                 composable(VisionTab.PROFILES.route) {

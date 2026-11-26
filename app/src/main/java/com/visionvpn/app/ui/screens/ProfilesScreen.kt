@@ -103,7 +103,7 @@ fun ProfilesScreen(
             subtitle = if (isPersian) {
                 "گروه‌بندی مجزا برای هر اشتراک • تست واقعی پروکسی"
             } else {
-                "Subscription-grouped • Real end-to-end proxy latency"
+                "Subscription-grouped • HTTPS round-trip measured through each proxy (not ICMP or live-core delay)"
             },
             trailing = {
                 if (uiState.isTestingLatency) {

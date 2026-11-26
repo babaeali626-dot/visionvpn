@@ -388,14 +388,14 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             if (currentChain.enabled && !currentChain.useEntryProxy) {
                 repository.saveChainConfig(currentChain.withExitProvider(ChainExitType.NONE))
             }
-            // A manual profile pick is an explicit pin: do not let URLTest immediately
+            // A manual profile pick is an explicit pin: do not let Balancer immediately
             // override the user's choice on the next health-check cycle.
-            if (snapshot.settings.smartConnectEnabled) {
-                repository.saveAppSettings(snapshot.settings.copy(smartConnectEnabled = false))
+            if (snapshot.settings.balancerEnabled) {
+                repository.saveAppSettings(snapshot.settings.copy(balancerEnabled = false))
             }
             repository.setActiveProfileId(profileId)
             if (snapshot.connectionState == VpnConnectionState.CONNECTED) {
-                postMessage("Manual profile selected. Smart Connect is paused; reconnecting with the pinned profile…")
+                postMessage("Manual profile selected. Balancer is paused; reconnecting with the pinned profile…")
                 controller.requestReconnect()
             }
         }
@@ -411,8 +411,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 postMessage(WarpManager.PROVISIONING_BLOCKED_MESSAGE)
                 return@launch
             }
-            if (uiState.value.settings.smartConnectEnabled) {
-                repository.saveAppSettings(uiState.value.settings.copy(smartConnectEnabled = false))
+            if (uiState.value.settings.balancerEnabled) {
+                repository.saveAppSettings(uiState.value.settings.copy(balancerEnabled = false))
             }
             val updatedChain = uiState.value.chainConfig.copy(
                 enabled = true,
@@ -447,9 +447,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     fun setExitProvider(provider: ChainExitType) {
         viewModelScope.launch {
             val updated = uiState.value.chainConfig.withExitProvider(provider)
-            if (provider != ChainExitType.NONE && uiState.value.settings.smartConnectEnabled) {
-                repository.saveAppSettings(uiState.value.settings.copy(smartConnectEnabled = false))
-                postMessage("Smart Connect paused because a local exit/chain provider was selected.")
+            if (provider != ChainExitType.NONE && uiState.value.settings.balancerEnabled) {
+                repository.saveAppSettings(uiState.value.settings.copy(balancerEnabled = false))
+                postMessage("Balancer paused because a local exit/chain provider was selected.")
             }
             repository.saveChainConfig(updated)
             if (uiState.value.connectionState == VpnConnectionState.CONNECTED) {
@@ -778,7 +778,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 profiles = mutation.profiles,
                 activeProfileId = mutation.activeProfileId
             )
-            pruneSmartConnectSelection(
+            pruneBalancerSelection(
                 previousSettings = snapshot.settings,
                 remainingProfiles = mutation.profiles,
                 activeProfileWasRemoved = mutation.activeProfileId != snapshot.activeProfileId
@@ -806,7 +806,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             }
             val nextActive = if (snapshot.activeProfileId == profileId) null else snapshot.activeProfileId
             repository.saveSubscriptionsAndProfiles(updatedSubs, remaining, nextActive)
-            pruneSmartConnectSelection(
+            pruneBalancerSelection(
                 previousSettings = snapshot.settings,
                 remainingProfiles = remaining,
                 activeProfileWasRemoved = nextActive != snapshot.activeProfileId
@@ -814,25 +814,25 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private suspend fun pruneSmartConnectSelection(
+    private suspend fun pruneBalancerSelection(
         previousSettings: AppSettings,
         remainingProfiles: List<ProxyProfile>,
         activeProfileWasRemoved: Boolean
     ) {
         val remainingIds = remainingProfiles.map { it.id }.toSet()
-        val nextSmartIds = previousSettings.smartConnectProfileIds.intersect(remainingIds)
-        val nextEnabled = previousSettings.smartConnectEnabled && nextSmartIds.size >= 2
-        val smartConfigChanged = nextSmartIds != previousSettings.smartConnectProfileIds ||
-            nextEnabled != previousSettings.smartConnectEnabled
+        val nextSmartIds = previousSettings.balancerProfileIds.intersect(remainingIds)
+        val nextEnabled = previousSettings.balancerEnabled && nextSmartIds.size >= 2
+        val smartConfigChanged = nextSmartIds != previousSettings.balancerProfileIds ||
+            nextEnabled != previousSettings.balancerEnabled
         if (smartConfigChanged) {
             repository.saveAppSettings(
                 previousSettings.copy(
-                    smartConnectProfileIds = nextSmartIds,
-                    smartConnectEnabled = nextEnabled
+                    balancerProfileIds = nextSmartIds,
+                    balancerEnabled = nextEnabled
                 )
             )
-            if (!nextEnabled && previousSettings.smartConnectEnabled) {
-                postMessage("Smart Connect was disabled because fewer than two selected profiles remain.")
+            if (!nextEnabled && previousSettings.balancerEnabled) {
+                postMessage("Balancer was disabled because fewer than two selected profiles remain.")
             }
         }
         if ((smartConfigChanged || activeProfileWasRemoved) &&
@@ -999,9 +999,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     fun updateChainConfig(transform: (ChainConfig) -> ChainConfig) {
         viewModelScope.launch {
             val updated = transform(uiState.value.chainConfig)
-            if (updated.activeExitProvider != ChainExitType.NONE && uiState.value.settings.smartConnectEnabled) {
-                repository.saveAppSettings(uiState.value.settings.copy(smartConnectEnabled = false))
-                postMessage("Smart Connect paused because a Tor/Psiphon/WARP chain was selected.")
+            if (updated.activeExitProvider != ChainExitType.NONE && uiState.value.settings.balancerEnabled) {
+                repository.saveAppSettings(uiState.value.settings.copy(balancerEnabled = false))
+                postMessage("Balancer paused because a Tor/Psiphon/WARP chain was selected.")
             }
             repository.saveChainConfig(updated)
         }
@@ -1018,15 +1018,15 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             val previous = snapshot.settings
             val existingProfileIds = snapshot.profiles.map { it.id }.toSet()
             val transformed = transform(previous)
-            val eligibleIds = transformed.smartConnectProfileIds.intersect(existingProfileIds)
-            val canEnableSmartConnect = eligibleIds.size >= 2
+            val eligibleIds = transformed.balancerProfileIds.intersect(existingProfileIds)
+            val canEnableBalancer = eligibleIds.size >= 2
             val updated = transformed.copy(
-                smartConnectProfileIds = eligibleIds,
-                smartConnectEnabled = transformed.smartConnectEnabled && canEnableSmartConnect
+                balancerProfileIds = eligibleIds,
+                balancerEnabled = transformed.balancerEnabled && canEnableBalancer
             )
             repository.saveAppSettings(updated)
-            if (transformed.smartConnectEnabled && !updated.smartConnectEnabled) {
-                postMessage("Select at least two existing profiles. Smart Connect remains off until then.")
+            if (transformed.balancerEnabled && !updated.balancerEnabled) {
+                postMessage("Select at least two existing profiles. Balancer remains off until then.")
             }
             val coreChanged = previous.remoteDns != updated.remoteDns ||
                 previous.directDns != updated.directDns ||
@@ -1038,13 +1038,21 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 previous.bypassIran != updated.bypassIran ||
                 previous.blockAds != updated.blockAds ||
                 previous.echAutoEnabled != updated.echAutoEnabled ||
+                previous.tlsFragmentEnabled != updated.tlsFragmentEnabled ||
+                previous.tlsFragmentMethod != updated.tlsFragmentMethod ||
+                previous.tlsFragmentRange != updated.tlsFragmentRange ||
+                previous.tlsFragmentSize != updated.tlsFragmentSize ||
+                previous.tlsFragmentSleep != updated.tlsFragmentSleep ||
+                previous.tlsMixedSniCase != updated.tlsMixedSniCase ||
+                previous.tlsPaddingEnabled != updated.tlsPaddingEnabled ||
+                previous.tlsPaddingSize != updated.tlsPaddingSize ||
                 previous.coreLogLevel != updated.coreLogLevel ||
-                ((previous.smartConnectEnabled || updated.smartConnectEnabled) && (
-                    previous.smartConnectEnabled != updated.smartConnectEnabled ||
-                        previous.smartConnectProfileIds != updated.smartConnectProfileIds ||
-                        previous.smartConnectIntervalSeconds != updated.smartConnectIntervalSeconds ||
-                        previous.smartConnectCandidateCount != updated.smartConnectCandidateCount ||
-                        previous.smartConnectToleranceMs != updated.smartConnectToleranceMs
+                ((previous.balancerEnabled || updated.balancerEnabled) && (
+                    previous.balancerEnabled != updated.balancerEnabled ||
+                        previous.balancerProfileIds != updated.balancerProfileIds ||
+                        previous.balancerIntervalSeconds != updated.balancerIntervalSeconds ||
+                        previous.balancerCandidateCount != updated.balancerCandidateCount ||
+                        previous.balancerStrategy != updated.balancerStrategy
                     ))
             if (coreChanged && uiState.value.connectionState == VpnConnectionState.CONNECTED) {
                 postMessage("Network settings changed. Reconnecting with the updated secure route…")
@@ -1053,19 +1061,19 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun setSmartConnectEnabled(enabled: Boolean) {
+    fun setBalancerEnabled(enabled: Boolean) {
         val state = uiState.value
-        val eligible = state.settings.smartConnectProfileIds
+        val eligible = state.settings.balancerProfileIds
             .count { id -> state.profiles.any { it.id == id } }
         if (enabled && eligible < 2) {
-            postMessage("Select at least two profiles for Smart Connect before enabling it.")
+            postMessage("Select at least two profiles for Balancer before enabling it.")
             return
         }
         if (enabled && (state.activeProfile == null || state.chainConfig.activeExitProvider != ChainExitType.NONE)) {
-            postMessage("Smart Connect currently requires a selected imported profile without an active Tor/Psiphon/WARP chain.")
+            postMessage("Balancer currently requires a selected imported profile without an active Tor/Psiphon/WARP chain.")
             return
         }
-        updateSettings { it.copy(smartConnectEnabled = enabled) }
+        updateSettings { it.copy(balancerEnabled = enabled) }
     }
 
     fun loadInstalledApps() {

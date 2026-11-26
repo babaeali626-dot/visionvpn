@@ -52,7 +52,7 @@ class MultiFormatParserAndVlessTest {
         assertEquals("Sec-WebSocket-Protocol", profile.wsEarlyDataHeaderName)
         assertEquals("", profile.realityPublicKey)
 
-        // Verify exact Sing-box v1.10.7 generated outbound
+        // Verify exact Hiddify Core (Sing-box fork v1.13.0) generated outbound
         val graph = RoutingGraph.build(profile, ChainConfig(), listOf(profile)).getOrThrow()
         val cfg = json.parseToJsonElement(ConfigBuilder().buildSingBoxConfig(graph, AppSettings())).jsonObject
         val outbound = cfg["outbounds"]!!.jsonArray.first {

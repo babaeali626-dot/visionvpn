@@ -50,7 +50,7 @@ data class ExitIpInfo(
  * Tunnel-only public egress IP and country lookup.
  *
  * Security & privacy guarantees:
- * - Routes EXCLUSIVELY through the active Sing-box loopback probe inbound (`127.0.0.1:[proxyPort]`).
+ * - Routes EXCLUSIVELY through the active Hiddify Core loopback probe inbound (`127.0.0.1:[proxyPort]`).
  * - NEVER falls back to the device's physical/direct network stack.
  * - Uses standard system HTTPS certificate-chain and hostname verification (no trust-all client).
  * - Sends minimal request headers (no account IDs, profile credentials, or subscription URLs).

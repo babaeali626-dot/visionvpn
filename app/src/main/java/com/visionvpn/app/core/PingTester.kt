@@ -61,8 +61,8 @@ object PingTester {
     const val DEFAULT_MAX_CONCURRENCY = 1
     private const val MAX_PORT_BIND_ATTEMPTS = 3
 
-    private const val LIBBOX_CLASS = "io.nekohasekai.libbox.Libbox"
-    private const val PLATFORM_INTERFACE_CLASS = "io.nekohasekai.libbox.PlatformInterface"
+    private const val LIBBOX_CLASS = "com.hiddify.core.libbox.Libbox"
+    private const val PLATFORM_INTERFACE_CLASS = "com.hiddify.core.libbox.PlatformInterface"
 
     private val reservedPorts: MutableSet<Int> = Collections.synchronizedSet(mutableSetOf())
 
@@ -206,7 +206,7 @@ object PingTester {
     }
 
     /**
-     * Creates a real Sing-box (`Libbox`) end-to-end proxy probe that spins up a temporary
+     * Creates a real Hiddify Core (`Libbox`) end-to-end HTTPS proxy probe that spins up a temporary
      * no-TUN loopback inbound for each candidate profile and tears it down reliably in `finally`.
      */
     fun createLibboxProbe(
@@ -400,7 +400,7 @@ object PingTester {
             val libboxClass = try {
                 Class.forName(LIBBOX_CLASS)
             } catch (_: ClassNotFoundException) {
-                val reason = "Sing-box native core (libbox.aar) is not available for proxy testing"
+                val reason = "Hiddify Core native library (hiddify-core.aar) is not available for proxy testing"
                 validOriginalIndexes.forEach { originalIndex ->
                     val profile = profiles[originalIndex]
                     results[originalIndex] = LatencyMeasurement(
@@ -413,8 +413,14 @@ object PingTester {
                 return@withHeadlessProbeLease results.filterNotNull()
             }
 
+            val platformClass = try {
+                Class.forName(PLATFORM_INTERFACE_CLASS)
+            } catch (e: Exception) {
+                return@withHeadlessProbeLease results.filterNotNull()
+            }
+            val headlessPlatform = newHeadlessPlatform(platformClass, "VisionHeadlessBatchProbePlatform")
             try {
-                LibboxRuntime.ensureInitialized(context, libboxClass)
+                LibboxRuntime.ensureInitialized(context, platformClass, headlessPlatform)
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
@@ -438,22 +444,6 @@ object PingTester {
                 repeat(validProfiles.size) {
                     val port = reserveEphemeralPort() ?: error("Unable to reserve a unique local probe port.")
                     ports += port
-                }
-                val platformClass = Class.forName(PLATFORM_INTERFACE_CLASS)
-                val headlessPlatform = Proxy.newProxyInstance(
-                    platformClass.classLoader,
-                    arrayOf(platformClass)
-                ) { _, method, _ ->
-                    when (method.name) {
-                        "usePlatformAutoDetectInterfaceControl", "usePlatformDefaultInterfaceMonitor",
-                        "usePlatformInterfaceGetter", "useProcFS", "underNetworkExtension", "includeAllNetworks" -> false
-                        "packageNameByUid" -> ""
-                        "uidByPackageName", "findConnectionOwner" -> -1
-                        "toString" -> "VisionHeadlessBatchProbePlatform"
-                        "hashCode" -> System.identityHashCode(this)
-                        "equals" -> false
-                        else -> null
-                    }
                 }
                 val configJson = configBuilder.buildLatencyProbeBatchConfig(validProfiles, ports, settings)
                 service = libboxClass.getMethod("newService", String::class.java, platformClass)
@@ -587,7 +577,7 @@ object PingTester {
         } catch (_: ClassNotFoundException) {
             return@withContext LatencyTestOutcome.Failure(
                 LatencyStatus.FAILED,
-                "Sing-box native core (libbox.aar) is not available for proxy testing"
+                "Hiddify Core native library (hiddify-core.aar) is not available for proxy testing"
             )
         }
 
@@ -601,8 +591,17 @@ object PingTester {
 
         // Atomically acquire a process-wide headless probe lease (mutually exclusive with active VPN core)
         val leaseResult = LibboxRuntime.withHeadlessProbeLease {
+            val platformClass = try {
+                Class.forName(PLATFORM_INTERFACE_CLASS)
+            } catch (e: Exception) {
+                return@withHeadlessProbeLease LatencyTestOutcome.Failure(
+                    LatencyStatus.FAILED,
+                    "Hiddify Core platform adapter is unavailable"
+                )
+            }
+            val headlessPlatform = newHeadlessPlatform(platformClass, "VisionHeadlessProbePlatform")
             try {
-                LibboxRuntime.ensureInitialized(context, libboxClass)
+                LibboxRuntime.ensureInitialized(context, platformClass, headlessPlatform)
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
@@ -626,27 +625,6 @@ object PingTester {
 
                 var boxService: Any? = null
                 try {
-                    val platformClass = Class.forName(PLATFORM_INTERFACE_CLASS)
-                    val headlessPlatform = Proxy.newProxyInstance(
-                        platformClass.classLoader,
-                        arrayOf(platformClass)
-                    ) { _, method, _ ->
-                        when (method.name) {
-                            "usePlatformAutoDetectInterfaceControl",
-                            "usePlatformDefaultInterfaceMonitor",
-                            "usePlatformInterfaceGetter",
-                            "useProcFS",
-                            "underNetworkExtension",
-                            "includeAllNetworks" -> false
-                            "packageNameByUid" -> ""
-                            "uidByPackageName", "findConnectionOwner" -> -1
-                            "toString" -> "VisionHeadlessProbePlatform"
-                            "hashCode" -> System.identityHashCode(this)
-                            "equals" -> false
-                            else -> null
-                        }
-                    }
-
                     val configJson = configBuilder.buildLatencyProbeConfig(profile, localPort, settings)
                     val newServiceMethod = libboxClass.getMethod(
                         "newService",
@@ -728,6 +706,23 @@ object PingTester {
             )
         }
     }
+
+    private fun newHeadlessPlatform(platformClass: Class<*>, label: String): Any =
+        Proxy.newProxyInstance(
+            platformClass.classLoader,
+            arrayOf(platformClass)
+        ) { proxy, method, _ ->
+            when (method.name) {
+                "usePlatformAutoDetectInterfaceControl", "usePlatformDefaultInterfaceMonitor",
+                "usePlatformInterfaceGetter", "useProcFS", "underNetworkExtension", "includeAllNetworks" -> false
+                "packageNameByUid" -> ""
+                "uidByPackageName", "findConnectionOwner" -> -1
+                "toString" -> label
+                "hashCode" -> System.identityHashCode(proxy)
+                "equals" -> false
+                else -> null
+            }
+        }
 
     internal fun reserveEphemeralPort(): Int? {
         repeat(8) {

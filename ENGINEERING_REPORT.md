@@ -1,3 +1,5 @@
+> **Status:** Historical engineering snapshot for the pre-Revision 11 baseline. Its Sing-box v1.10.7 and old dependency references are superseded by `docs/revision11/IMPLEMENTATION_REPORT.md`; do not treat this file as the current engine pin.
+
 # VisionVPN — Engineering Delivery Report (Revision 8 Offline Source Hardening)
 
 > **Revision 8 delivery note:** this report extends the Revision 7 source snapshot. The edits in this offline pass are recorded in [`docs/revision8/IMPLEMENTATION_REPORT.md`](docs/revision8/IMPLEMENTATION_REPORT.md). The WARP false-ready/default-fallback issue was hardened, and a bounded profile-probe timeout setting was added. These changes are `IMPLEMENTED BUT NOT TESTED` until the Android project build and regression suite are run with the missing build inputs. No branch/CI/device claim is made.

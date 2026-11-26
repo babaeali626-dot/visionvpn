@@ -90,10 +90,10 @@ fun HomeScreen(
     onOpenChainManager: () -> Unit,
     onOpenProfiles: () -> Unit,
     onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit,
-    onSetSmartConnectEnabled: (Boolean) -> Unit
+    onSetBalancerEnabled: (Boolean) -> Unit
 ) {
     var showProfileSheet by remember { mutableStateOf(false) }
-    var showSmartConnectProfiles by remember { mutableStateOf(false) }
+    var showBalancerProfiles by remember { mutableStateOf(false) }
 
     var elapsedSeconds by remember { mutableLongStateOf(0L) }
     LaunchedEffect(uiState.connectedSinceMs, uiState.connectionState) {
@@ -120,7 +120,7 @@ fun HomeScreen(
     }
     val hintText = when (uiState.connectionState) {
         VpnConnectionState.CONNECTED -> formatDuration(elapsedSeconds)
-        VpnConnectionState.CONNECTING -> "Starting Sing-box…"
+        VpnConnectionState.CONNECTING -> "Starting Hiddify Core…"
         VpnConnectionState.ENGINE_READY -> "Establishing Tunnel…"
         VpnConnectionState.VERIFYING_CONNECTIVITY -> "Checking Internet…"
         VpnConnectionState.RECONNECTING -> "Reconnecting…"
@@ -129,7 +129,7 @@ fun HomeScreen(
 
     val exitProvider = uiState.activeExitProvider
     val exitLabel = exitProvider.labelEn
-    val smartConnectAvailable = uiState.activeProfile != null &&
+    val balancerAvailable = uiState.activeProfile != null &&
         uiState.chainConfig.activeExitProvider == ChainExitType.NONE
 
     Column(
@@ -201,41 +201,41 @@ fun HomeScreen(
         GlassCard(modifier = Modifier.fillMaxWidth()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text("Smart Connect", style = MaterialTheme.typography.titleMedium)
+                    Text("Balancer", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        text = if (uiState.settings.smartConnectEnabled) {
-                            "Automatic URL testing • ${uiState.settings.smartConnectProfileIds.size} selected • ${uiState.settings.smartConnectIntervalSeconds}s interval"
+                        text = if (uiState.settings.balancerEnabled) {
+                            "${uiState.settings.balancerStrategy.label} • ${uiState.settings.balancerProfileIds.size} selected • ${uiState.settings.balancerIntervalSeconds}s checks"
                         } else {
-                            "Choose trusted profiles; Sing-box selects the fastest healthy route."
+                            "Choose trusted profiles and a Hiddify Core distribution strategy."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = VisionColors.TextSecondary
                     )
                 }
                 Switch(
-                    checked = uiState.settings.smartConnectEnabled,
-                    enabled = uiState.settings.smartConnectEnabled ||
-                        (smartConnectAvailable && uiState.profiles.size >= 2 &&
-                            uiState.settings.smartConnectProfileIds.count { id -> uiState.profiles.any { it.id == id } } >= 2),
-                    onCheckedChange = onSetSmartConnectEnabled
+                    checked = uiState.settings.balancerEnabled,
+                    enabled = uiState.settings.balancerEnabled ||
+                        (balancerAvailable && uiState.profiles.size >= 2 &&
+                            uiState.settings.balancerProfileIds.count { id -> uiState.profiles.any { it.id == id } } >= 2),
+                    onCheckedChange = onSetBalancerEnabled
                 )
             }
             Spacer(modifier = Modifier.height(8.dp))
             androidx.compose.material3.OutlinedButton(
-                onClick = { showSmartConnectProfiles = true },
+                onClick = { showBalancerProfiles = true },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Choose Smart Connect Profiles (${uiState.settings.smartConnectProfileIds.size})")
+                Text("Choose Balancer Profiles (${uiState.settings.balancerProfileIds.size})")
             }
-            if (!smartConnectAvailable && !uiState.settings.smartConnectEnabled) {
+            if (!balancerAvailable && !uiState.settings.balancerEnabled) {
                 Text(
-                    "Select an imported profile and turn off legacy Tor/Psiphon/WARP exit layers to use Smart Connect in this build.",
+                    "Select an imported profile and turn off legacy Tor/Psiphon/WARP exit layers to use Balancer in this build.",
                     style = MaterialTheme.typography.labelSmall,
                     color = VisionColors.AmberWarning
                 )
-            } else if (uiState.settings.smartConnectEnabled && uiState.connectionState == VpnConnectionState.CONNECTED) {
+            } else if (uiState.settings.balancerEnabled && uiState.connectionState == VpnConnectionState.CONNECTED) {
                 Text(
-                    "Smart Connect URLTest group is active. Existing flows are kept; new connections use the fastest healthy selected outbound.",
+                    "${uiState.settings.balancerStrategy.label} balancer is active for new connections.",
                     style = MaterialTheme.typography.labelSmall,
                     color = VisionColors.EmeraldConnected
                 )
@@ -321,14 +321,14 @@ fun HomeScreen(
                 }
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    if (uiState.settings.smartConnectEnabled && uiState.connectionState == VpnConnectionState.CONNECTED) {
+                    if (uiState.settings.balancerEnabled && uiState.connectionState == VpnConnectionState.CONNECTED) {
                         Text(
-                            text = "Connection Profile • Smart Connect",
+                            text = "Connection Profile • Balancer",
                             style = MaterialTheme.typography.labelSmall,
                             color = VisionColors.TextSecondary
                         )
                         Text(
-                            text = "Automatic best-performing route",
+                            text = "${uiState.settings.balancerStrategy.label}",
                             style = MaterialTheme.typography.titleMedium,
                             maxLines = 1
                         )
@@ -336,7 +336,7 @@ fun HomeScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             ProtocolBadge("AUTO")
                             Text(
-                                text = "${uiState.settings.smartConnectProfileIds.size} selected • ${uiState.settings.smartConnectIntervalSeconds}s checks",
+                                text = "${uiState.settings.balancerProfileIds.size} selected • ${uiState.settings.balancerIntervalSeconds}s checks",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = VisionColors.CyanHighlight
                             )
@@ -616,10 +616,10 @@ fun HomeScreen(
             }
         }
     }
-    if (showSmartConnectProfiles) {
-        SmartConnectProfilesDialog(
+    if (showBalancerProfiles) {
+        BalancerProfilesDialog(
             uiState = uiState,
-            onDismiss = { showSmartConnectProfiles = false },
+            onDismiss = { showBalancerProfiles = false },
             onUpdateSettings = onUpdateSettings
         )
     }
@@ -627,23 +627,23 @@ fun HomeScreen(
 
 
 @Composable
-private fun SmartConnectProfilesDialog(
+private fun BalancerProfilesDialog(
     uiState: VisionUiState,
     onDismiss: () -> Unit,
     onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit
 ) {
     // Keep edits local while the user checks several profiles. Persist once on Done;
-    // saving each checkbox could trigger repeated VPN restarts while Smart Connect is active.
-    var selectedIds by remember(uiState.settings.smartConnectProfileIds) {
-        mutableStateOf(uiState.settings.smartConnectProfileIds.toSet())
+    // saving each checkbox could trigger repeated VPN restarts while Balancer is active.
+    var selectedIds by remember(uiState.settings.balancerProfileIds) {
+        mutableStateOf(uiState.settings.balancerProfileIds.toSet())
     }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Smart Connect Profiles") },
+        title = { Text("Balancer Profiles") },
         text = {
             Column(modifier = Modifier.height(420.dp)) {
                 Text(
-                    "Only checked profiles can be included in the automatic URLTest group. Select at least two profiles.",
+                    "Only checked profiles can be included in the automatic Balancer group. Select at least two profiles.",
                     style = MaterialTheme.typography.bodySmall,
                     color = VisionColors.TextSecondary
                 )
@@ -673,7 +673,7 @@ private fun SmartConnectProfilesDialog(
                 enabled = selectedIds.size >= 2,
                 onClick = {
                     onUpdateSettings { current ->
-                        current.copy(smartConnectProfileIds = selectedIds.intersect(uiState.profiles.map { it.id }.toSet()))
+                        current.copy(balancerProfileIds = selectedIds.intersect(uiState.profiles.map { it.id }.toSet()))
                     }
                     onDismiss()
                 }
@@ -683,7 +683,7 @@ private fun SmartConnectProfilesDialog(
             Row {
                 TextButton(onClick = onDismiss) { Text("Cancel") }
                 TextButton(onClick = {
-                    onUpdateSettings { it.copy(smartConnectEnabled = false) }
+                    onUpdateSettings { it.copy(balancerEnabled = false) }
                     onDismiss()
                 }) { Text("Turn Off") }
             }

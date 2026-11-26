@@ -3,6 +3,7 @@ package com.visionvpn.app.core
 import com.visionvpn.app.chain.RoutingGraph
 import com.visionvpn.app.chain.RoutingNode
 import com.visionvpn.app.data.model.AppSettings
+import com.visionvpn.app.data.model.BalancerStrategy
 import com.visionvpn.app.data.model.Ipv6Policy
 import com.visionvpn.app.data.model.ProxyProfile
 import com.visionvpn.app.data.model.ProxyProtocol
@@ -18,7 +19,7 @@ import kotlinx.serialization.json.putJsonObject
 import java.util.Base64
 
 /**
- * Generates Sing-box v1.10.7 JSON configurations directly from a validated [RoutingGraph],
+ * Generates Hiddify Core v5 JSON configurations directly from a validated [RoutingGraph],
  * as well as isolated headless latency-probe configurations for real end-to-end proxy testing.
  *
  * Security guarantees:
@@ -42,22 +43,22 @@ class ConfigBuilder {
         const val TAG_PROBE_IN = "mixed-probe-in"
         const val CLASH_API_PORT = 9090
         const val PROBE_PROXY_PORT = 10808
-        const val SMART_CONNECT_GROUP_TAG = "smart-connect-auto"
+        const val BALANCER_GROUP_TAG = "vision-balancer"
     }
 
     /**
-     * Validates profile security and protocol parameters before emitting Sing-box v1.10.7 JSON.
+     * Validates profile security and protocol parameters before emitting Hiddify Core v5 JSON.
      * Prevents incomplete REALITY configs from silently downgrading to partial/misleading TLS.
      */
     /**
-     * Supported uTLS fingerprints in Sing-box v1.10.7 (`common/tls/utls_client.go`).
+     * Supported uTLS fingerprints in Hiddify Core v5 (`common/tls/utls_client.go`).
      */
     private val supportedUtlsFingerprints = setOf(
         "chrome", "firefox", "edge", "safari", "360", "qq", "ios", "android", "random", "randomized"
     )
 
     /**
-     * Decodes a REALITY X25519 public key (`pbk`) using URL-safe Base64 (matching Sing-box v1.10.7
+     * Decodes a REALITY X25519 public key (`pbk`) using URL-safe Base64 (matching Hiddify Core v5
      * `base64.RawURLEncoding`, rejecting whitespace and non-URL-safe characters) and verifies
      * that it decodes to exactly 32 bytes.
      */
@@ -73,7 +74,7 @@ class ConfigBuilder {
 
     /**
      * Validates a REALITY `short_id` (`sid`): empty (when server permits) or even-length
-     * hexadecimal string up to 8 bytes (16 hex characters), matching Sing-box v1.10.7 hex decode.
+     * hexadecimal string up to 8 bytes (16 hex characters), matching Hiddify Core v5 hex decode.
      */
     internal fun isValidRealityShortId(rawShortId: String): Boolean {
         val trimmed = rawShortId
@@ -120,44 +121,46 @@ class ConfigBuilder {
     fun buildSingBoxConfig(
         graph: RoutingGraph,
         settings: AppSettings,
-        smartConnectProfiles: List<ProxyProfile> = emptyList()
+        balancerProfiles: List<ProxyProfile> = emptyList()
     ): String {
         val outbounds = mutableListOf<JsonObject>()
         val enforceStrictPrivacy = graph.isPrivacyExitMode
-        val smartProfiles = if (
-            settings.smartConnectEnabled &&
+        require(!(settings.tlsFragmentEnabled && settings.tlsPaddingEnabled)) {
+            "TLS fragmentation and TLS padding cannot be enabled at the same time. Choose one technique."
+        }
+        val selectedBalancerProfiles = if (
+            settings.balancerEnabled &&
             graph.nodes.size == 1 && graph.nodes.single() is RoutingNode.ProxyNode
         ) {
-            smartConnectProfiles
+            balancerProfiles
                 .distinctBy { it.id }
-                .filter { it.id in settings.smartConnectProfileIds }
+                .filter { it.id in settings.balancerProfileIds }
                 .onEach { validateProfile(it).getOrThrow() }
-                .take(settings.smartConnectCandidateCount.coerceIn(2, 100))
+                .take(settings.balancerCandidateCount.coerceIn(2, 100))
         } else emptyList()
-        // The index is unique within this generated config and avoids hash collisions between IDs.
-        val smartTagByProfileId = smartProfiles.mapIndexed { index, profile ->
-            profile.id to "smart-proxy-$index"
+        // Stable, deterministic tags: never expose profile IDs in the generated native config.
+        val balancerTagByProfileId = selectedBalancerProfiles.mapIndexed { index, profile ->
+            profile.id to "balancer-proxy-$index"
         }.toMap()
-        val finalTag = if (smartProfiles.size >= 2) SMART_CONNECT_GROUP_TAG else graph.finalOutboundTag
+        val finalTag = if (selectedBalancerProfiles.size >= 2) BALANCER_GROUP_TAG else graph.finalOutboundTag
 
-        if (smartProfiles.size >= 2) {
-            smartProfiles.forEach { profile ->
+        if (selectedBalancerProfiles.size >= 2) {
+            selectedBalancerProfiles.forEach { profile ->
                 outbounds += buildProfileOutbound(
-                    tag = smartTagByProfileId.getValue(profile.id),
+                    tag = balancerTagByProfileId.getValue(profile.id),
                     profile = profile,
                     detourTag = null,
-                    enableEchAuto = settings.echAutoEnabled
+                    enableEchAuto = settings.echAutoEnabled,
+                    settings = settings
                 )
             }
             outbounds += buildJsonObject {
-                put("type", "urltest")
-                put("tag", SMART_CONNECT_GROUP_TAG)
-                putJsonArray("outbounds") { smartProfiles.forEach { add(JsonPrimitive(smartTagByProfileId.getValue(it.id))) } }
-                put("url", "https://www.gstatic.com/generate_204")
-                put("interval", "${settings.smartConnectIntervalSeconds.coerceIn(15, 3600)}s")
-                put("tolerance", settings.smartConnectToleranceMs.coerceIn(1, 500))
-                put("idle_timeout", "30m")
-                // Preserve existing flows; new flows use the fastest healthy member.
+                put("type", "balancer")
+                put("tag", BALANCER_GROUP_TAG)
+                putJsonArray("outbounds") { selectedBalancerProfiles.forEach { add(JsonPrimitive(balancerTagByProfileId.getValue(it.id))) } }
+                put("strategy", settings.balancerStrategy.coreValue)
+                // Health-check URLs, interval and idle timeout belong to the global
+                // experimental.monitoring block below, not to the balancer object.
                 put("interrupt_exist_connections", false)
             }
         } else {
@@ -168,7 +171,8 @@ class ConfigBuilder {
                         tag = node.tag,
                         profile = node.profile,
                         detourTag = node.upstreamTag,
-                        enableEchAuto = settings.echAutoEnabled
+                        enableEchAuto = settings.echAutoEnabled,
+                        settings = settings
                     )
                 }
                 is RoutingNode.WarpNode -> {
@@ -212,11 +216,25 @@ class ConfigBuilder {
                 put("level", settings.coreLogLevel.trim().lowercase().takeIf { it in setOf("error", "warn", "info", "debug", "trace") } ?: "info")
                 put("timestamp", true)
             }
-            put("dns", buildDnsConfig(graph, settings, finalTag, enforceStrictPrivacy, smartProfiles))
+            put("dns", buildDnsConfig(graph, settings, finalTag, enforceStrictPrivacy, selectedBalancerProfiles))
             put("inbounds", buildInbounds(graph, settings))
             put("outbounds", JsonArray(outbounds))
             put("route", buildRouteConfig(graph, settings, finalTag, enforceStrictPrivacy))
             putJsonObject("experimental") {
+                putJsonObject("monitoring") {
+                    put("interval", "${settings.balancerIntervalSeconds.coerceIn(15, 3600)}s")
+                    putJsonArray("urls") {
+                        add(JsonPrimitive(settings.latencyTestUrl))
+                        add(JsonPrimitive("https://cp.cloudflare.com/generate_204"))
+                    }
+                    put("url_test_timeout", "${settings.latencyProbeTimeoutSeconds.coerceIn(1, 30)}s")
+                    putJsonArray("on_demand_timeouts") {
+                        add(JsonPrimitive("1s"))
+                        add(JsonPrimitive("3s"))
+                        add(JsonPrimitive("10s"))
+                    }
+                    put("idle_timeout", "10m")
+                }
                 putJsonObject("clash_api") {
                     put("external_controller", "127.0.0.1:$CLASH_API_PORT")
                 }
@@ -311,7 +329,8 @@ class ConfigBuilder {
                         tag = candidateTags[index],
                         profile = profile,
                         detourTag = null,
-                        enableEchAuto = settings.echAutoEnabled
+                        enableEchAuto = settings.echAutoEnabled,
+                        settings = settings
                     ))
                 }
                 add(buildJsonObject { put("type", "direct"); put("tag", TAG_DIRECT) })
@@ -337,7 +356,7 @@ class ConfigBuilder {
     }
 
     /**
-     * Builds a minimal, no-TUN Sing-box v1.10.7 configuration with a single loopback `mixed`
+     * Builds a minimal, no-TUN Hiddify Core v5 configuration with a single loopback `mixed`
      * inbound on [localPort] that routes all test requests exclusively through [profile].
      * Used for real end-to-end proxy latency testing without touching Android's TUN interface.
      */
@@ -348,7 +367,13 @@ class ConfigBuilder {
     ): String {
         val candidateTag = "probe-candidate"
         val outbounds = listOf(
-            buildProfileOutbound(tag = candidateTag, profile = profile, detourTag = null),
+            buildProfileOutbound(
+                tag = candidateTag,
+                profile = profile,
+                detourTag = null,
+                enableEchAuto = settings.echAutoEnabled,
+                settings = settings
+            ),
             buildJsonObject {
                 put("type", "direct")
                 put("tag", TAG_DIRECT)
@@ -695,7 +720,8 @@ class ConfigBuilder {
         tag: String,
         profile: ProxyProfile,
         detourTag: String?,
-        enableEchAuto: Boolean = false
+        enableEchAuto: Boolean = false,
+        settings: AppSettings = AppSettings()
     ): JsonObject {
         validateProfile(profile).getOrThrow()
         return buildJsonObject {
@@ -711,7 +737,7 @@ class ConfigBuilder {
                 put("server_port", profile.port)
                 put("uuid", profile.uuid)
                 if (profile.flow.isNotBlank()) put("flow", profile.flow)
-                putTlsAndTransport(profile, enableEchAuto)
+                putTlsAndTransport(profile, enableEchAuto, settings)
             }
             ProxyProtocol.VMESS -> {
                 put("type", "vmess")
@@ -720,14 +746,14 @@ class ConfigBuilder {
                 put("uuid", profile.uuid)
                 put("security", profile.encryption.ifBlank { "auto" })
                 put("alter_id", profile.alterId)
-                putTlsAndTransport(profile, enableEchAuto)
+                putTlsAndTransport(profile, enableEchAuto, settings)
             }
             ProxyProtocol.TROJAN -> {
                 put("type", "trojan")
                 put("server", profile.server)
                 put("server_port", profile.port)
                 put("password", profile.password)
-                putTlsAndTransport(profile, enableEchAuto)
+                putTlsAndTransport(profile, enableEchAuto, settings)
             }
             ProxyProtocol.SHADOWSOCKS -> {
                 put("type", "shadowsocks")
@@ -752,6 +778,7 @@ class ConfigBuilder {
                     put("server_name", profile.sni.ifBlank { profile.server })
                     put("insecure", profile.allowInsecure)
                     if (enableEchAuto) putJsonObject("ech") { put("enabled", true); putJsonArray("config") { } }
+                    putTlsTricks(settings, allowPadding = false, allowMixedCaseSni = true)
                 }
             }
             ProxyProtocol.TUIC -> {
@@ -770,6 +797,7 @@ class ConfigBuilder {
                     if (profile.alpn.isNotEmpty()) {
                         putJsonArray("alpn") { profile.alpn.forEach { add(JsonPrimitive(it)) } }
                     }
+                    putTlsTricks(settings, allowPadding = false, allowMixedCaseSni = true)
                 }
             }
             ProxyProtocol.WIREGUARD -> {
@@ -800,10 +828,27 @@ class ConfigBuilder {
                 if (profile.password.isNotBlank()) put("password", profile.password)
             }
         }
+        if (settings.tlsFragmentEnabled && profile.protocol in setOf(
+                ProxyProtocol.VLESS, ProxyProtocol.VMESS, ProxyProtocol.TROJAN,
+                ProxyProtocol.HYSTERIA2, ProxyProtocol.TUIC
+            ) && (profile.security.equals("tls", true) || profile.security.equals("reality", true) ||
+                profile.protocol in setOf(ProxyProtocol.HYSTERIA2, ProxyProtocol.TUIC))) {
+            putJsonObject("tls_fragment") {
+                put("enabled", true)
+                put("method", settings.tlsFragmentMethod)
+                if (settings.tlsFragmentMethod == "range") put("range", settings.tlsFragmentRange)
+                put("size", settings.tlsFragmentSize)
+                put("sleep", settings.tlsFragmentSleep)
+            }
+        }
         }
     }
 
-    private fun kotlinx.serialization.json.JsonObjectBuilder.putTlsAndTransport(profile: ProxyProfile, enableEchAuto: Boolean) {
+    private fun kotlinx.serialization.json.JsonObjectBuilder.putTlsAndTransport(
+        profile: ProxyProfile,
+        enableEchAuto: Boolean,
+        settings: AppSettings
+    ) {
         val useTls = profile.security.equals("tls", ignoreCase = true) ||
             profile.security.equals("reality", ignoreCase = true)
         if (useTls) {
@@ -818,7 +863,7 @@ class ConfigBuilder {
                 if (enableEchAuto && !profile.security.equals("reality", ignoreCase = true)) {
                     putJsonObject("ech") {
                         put("enabled", true)
-                        // Empty config tells Sing-box v1.10.7 to discover ECHConfig via DNS.
+                        // Empty config tells Hiddify Core v5 to discover ECHConfig via DNS.
                         putJsonArray("config") { }
                     }
                 }
@@ -842,6 +887,12 @@ class ConfigBuilder {
                         put("short_id", profile.realityShortId.trim())
                     }
                 }
+                val fixedUtlsFingerprint = effectiveFp.lowercase() in fixedUtlsFingerprints
+                putTlsTricks(
+                    settings,
+                    allowPadding = !isReality && fixedUtlsFingerprint,
+                    allowMixedCaseSni = !isReality
+                )
             }
         }
 
@@ -881,4 +932,31 @@ class ConfigBuilder {
         val ipv4 = Regex("^(\\d{1,3}\\.){3}\\d{1,3}$")
         return ipv4.matches(cleaned) || cleaned.contains(":")
     }
+    /**
+     * Emits only TLS tricks supported by the selected TLS implementation.
+     * Padding requires a fixed uTLS fingerprint and is intentionally omitted for
+     * REALITY, Hysteria2/TUIC (which do not currently emit uTLS here), and random fingerprints.
+     */
+    private fun kotlinx.serialization.json.JsonObjectBuilder.putTlsTricks(
+        settings: AppSettings,
+        allowPadding: Boolean,
+        allowMixedCaseSni: Boolean
+    ) {
+        val emitMixedCase = settings.tlsMixedSniCase && allowMixedCaseSni
+        val emitPadding = settings.tlsPaddingEnabled && allowPadding
+        if (emitMixedCase || emitPadding) {
+            putJsonObject("tls_tricks") {
+                if (emitMixedCase) put("mixedcase_sni", true)
+                if (emitPadding) {
+                    put("padding_mode", "random")
+                    put("padding_size", settings.tlsPaddingSize)
+                }
+            }
+        }
+    }
+
+    private val fixedUtlsFingerprints = setOf(
+        "chrome", "firefox", "edge", "safari", "360", "qq", "ios", "android"
+    )
+
 }

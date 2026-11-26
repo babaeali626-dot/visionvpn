@@ -6,7 +6,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
 
-/** Exclusive ownership states for the single process-wide Sing-box native runtime. */
+/** Exclusive ownership states for the single process-wide Hiddify Core native runtime. */
 enum class LibboxLeaseMode {
     IDLE,
     VPN_STARTING,
@@ -18,13 +18,14 @@ enum class LibboxLeaseMode {
 }
 
 /**
- * Process-wide lifecycle coordinator for Sing-box (`Libbox` v1.10.7).
+ * Process-wide lifecycle coordinator for Hiddify Core (`Libbox` v5).
  * A lease is retained until the owner confirms that every native service and descriptor is closed.
  * Cleanup failures quarantine the runtime in [FAULTED] instead of admitting another native service.
  */
 object LibboxRuntime {
 
-    private const val SETUP_OPTIONS_CLASS = "io.nekohasekai.libbox.SetupOptions"
+    private const val MOBILE_CLASS = "com.hiddify.core.mobile.Mobile"
+    private const val SETUP_OPTIONS_CLASS = "com.hiddify.core.mobile.SetupOptions"
 
     private val setupLock = Any()
     private val stateLock = Any()
@@ -180,20 +181,33 @@ object LibboxRuntime {
         }
     }
 
-    fun ensureInitialized(context: Context, libboxClass: Class<*>) {
+    fun ensureInitialized(
+        context: Context,
+        platformInterfaceClass: Class<*>,
+        platformInterface: Any
+    ) {
         if (initialized) return
         synchronized(setupLock) {
             if (initialized) return
-            val baseDir = File(context.filesDir, "singbox").apply { mkdirs() }
+            val baseDir = File(context.filesDir, "hiddify-core").apply { mkdirs() }
             val workDir = File(baseDir, "work").apply { mkdirs() }
-            val tempDir = File(context.cacheDir, "singbox_tmp").apply { mkdirs() }
+            val tempDir = File(context.cacheDir, "hiddify-core_tmp").apply { mkdirs() }
 
             val optionsClass = Class.forName(SETUP_OPTIONS_CLASS)
+            val mobileClass = Class.forName(MOBILE_CLASS)
             val options = optionsClass.getDeclaredConstructor().newInstance()
             optionsClass.getMethod("setBasePath", String::class.java).invoke(options, baseDir.absolutePath)
-            optionsClass.getMethod("setWorkingPath", String::class.java).invoke(options, workDir.absolutePath)
-            optionsClass.getMethod("setTempPath", String::class.java).invoke(options, tempDir.absolutePath)
-            libboxClass.getMethod("setup", optionsClass).invoke(null, options)
+            optionsClass.getMethod("setWorkingDir", String::class.java).invoke(options, workDir.absolutePath)
+            optionsClass.getMethod("setTempDir", String::class.java).invoke(options, tempDir.absolutePath)
+            // SetupMode.OLD is the zero-value default. It keeps this direct-libbox integration
+            // local and does not start Hiddify's optional gRPC control listener. The Android
+            // platform adapter is still supplied because Mobile.setup requires it in Core v5.
+            // This flag is part of com.hiddify.core.mobile.SetupOptions in Core v5.
+            // It must be applied through Mobile.setup(), not the removed legacy Libbox.setup().
+            optionsClass.getMethod("setFixAndroidStack", Boolean::class.javaPrimitiveType!!)
+                .invoke(options, true)
+            mobileClass.getMethod("setup", optionsClass, platformInterfaceClass)
+                .invoke(null, options, platformInterface)
             initialized = true
         }
     }

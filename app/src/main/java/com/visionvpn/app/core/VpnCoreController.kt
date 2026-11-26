@@ -331,20 +331,20 @@ class VpnCoreController(
                 _activeExitProvider.value = graph.effectiveFinalExitProvider
                 _activeChainLabels.value = graph.describeChain()
 
-                val smartCandidates = if (settings.smartConnectEnabled) {
+                val balancerCandidates = if (settings.balancerEnabled) {
                     require(graph.nodes.size == 1 && graph.nodes.single() is com.visionvpn.app.chain.RoutingNode.ProxyNode) {
-                        "Smart Connect currently requires a single imported proxy route. Disable Smart Connect before using Tor/Psiphon/WARP chain layers."
+                        "Balancer currently requires a single imported proxy route. Disable Balancer before using Tor/Psiphon/WARP chain layers."
                     }
-                    profiles.filter { it.id in settings.smartConnectProfileIds }
+                    profiles.filter { it.id in settings.balancerProfileIds }
                         .filter { configBuilder.validateProfile(it).isSuccess }
-                        .take(settings.smartConnectCandidateCount.coerceIn(2, 100))
-                        .also { require(it.size >= 2) { "Select at least two valid profiles for Smart Connect." } }
+                        .take(settings.balancerCandidateCount.coerceIn(2, 100))
+                        .also { require(it.size >= 2) { "Select at least two valid profiles for Balancer." } }
                 } else emptyList()
                 val singBoxJson = try {
-                    configBuilder.buildSingBoxConfig(graph, settings, smartCandidates)
+                    configBuilder.buildSingBoxConfig(graph, settings, balancerCandidates)
                 } catch (e: Exception) {
                     return failAndCleanup(
-                        "[Config] ${LogRedactor.redact(e.message ?: "Failed to build Sing-box configuration")}"
+                        "[Config] ${LogRedactor.redact(e.message ?: "Failed to build Hiddify Core configuration")}"
                     )
                 }
                 _lastGeneratedConfig.value = singBoxJson
@@ -364,12 +364,12 @@ class VpnCoreController(
                     }
                 }
 
-                // Stage 1b: Start Sing-box core and establish Android TUN
-                _statusMessage.value = "Starting Sing-box core..."
+                // Stage 1b: Start Hiddify Core and establish Android TUN
+                _statusMessage.value = "Starting Hiddify Core..."
                 val coreStart = libboxBridge.startCore(singBoxJson, vpnService, settings)
                 if (coreStart.isFailure) {
                     return failAndCleanup(
-                        "[Sing-box Core] ${LogRedactor.redact(coreStart.exceptionOrNull()?.message ?: "Sing-box libbox failed to start")}"
+                        "[Hiddify Core] ${LogRedactor.redact(coreStart.exceptionOrNull()?.message ?: "Hiddify Core libbox failed to start")}"
                     )
                 }
 

@@ -1,5 +1,7 @@
 # VisionVPN — Mandatory Reference Study
 
+> **Revision 11 update:** the former standalone Sing-box v1.10.7 integration documented below is historical and has been replaced by Hiddify Core v5.9.15. The Android app now builds with API 36 / AGP 8.13.2, and CI uses Android NDK r30. The original screenshots in `docs/revision8/references/` remain the UI/security design references. See `docs/revision11/IMPLEMENTATION_REPORT.md` for current behavior and limitations.
+
 This document records how the four mandatory engineering references directly shaped VisionVPN's architecture, configuration schemas, platform bindings, and CI verification gates.
 
 ## 1. Psiphon Tunnel Core & Official Android Client
@@ -13,7 +15,7 @@ This document records how the four mandatory engineering references directly sha
   - Structured notices (`ListeningSocksProxyPort`, `AvailableEgressRegions`, `Tunnels`, `ActiveTunnel`, `UnavailableEgressRegion`) are separated so listener startup alone never triggers `CONNECTED`.
 - **Architecture Decision & License**: Retained standalone `ConsoleClient` binary (`libpsiphon.so`) rather than a second `gomobile` AAR because Android APKs cannot bundle two `gomobile` runtimes (`libgojni.so` symbol clash with Sing-box `libbox.aar`). Licensed under **GPL-3.0-or-later** (documented in `THIRD_PARTY_NOTICES.md`).
 
-## 2. Sing-box Core & Libbox (`v1.10.7`)
+## 2. Previous standalone Sing-box Core & Libbox (`v1.10.7`; superseded in Revision 11)
 - **References**:
   - `https://github.com/SagerNet/sing-box` (`v1.10.7/experimental/libbox/platform.go`, `https://sing-box.sagernet.org/`)
 - **Key Findings Applied**:
@@ -37,4 +39,9 @@ This document records how the four mandatory engineering references directly sha
   - `https://developer.android.com/guide/practices/page-sizes`
 - **Key Findings Applied**:
   - Android 15+ devices support 16 KB memory pages; apps targeting API 35+ must align all 64-bit native ELF `PT_LOAD` segments to `16384` (`0x4000`) and align uncompressed native libraries inside the APK on 16 KB boundaries (`zipalign -c -P 16 -v 4`).
-  - Upgraded CI NDK from r27 to **NDK r28 (`28.0.13004108`)** (16 KB default alignment) and added a dedicated **`Verify 16 KB ELF PT_LOAD and APK ZIP Alignment`** gate in `.github/workflows/android-build.yml` inspecting every `.so` extracted from the final APK (including `libbox.aar` and `tor-android` transitive native libraries).
+  - Upgraded CI NDK from r27 to **NDK r28 (`28.0.13004108`; upgraded to r30 in Revision 11)** (16 KB default alignment) and added a dedicated **`Verify 16 KB ELF PT_LOAD and APK ZIP Alignment`** gate in `.github/workflows/android-build.yml` inspecting every `.so` extracted from the final APK (including `libbox.aar` and `tor-android` transitive native libraries).
+
+
+## Hiddify Core v5 Android binding note
+
+The v5.9.15 Android AAR binds both `experimental/libbox` and `platform/mobile`. The setup entry point is `com.hiddify.core.mobile.Mobile.setup(SetupOptions, PlatformInterface)`, and `SetupOptions` belongs to `com.hiddify.core.mobile`; the app keeps `Libbox.newService` only for its own `VpnService` service lifecycle.

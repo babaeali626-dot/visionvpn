@@ -257,7 +257,7 @@ object SubscriptionFormatParser {
         val server = obj["server"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
         val port = obj["server_port"]?.jsonPrimitive?.intOrNull ?: 0
 
-        if (type in setOf("direct", "block", "dns", "selector", "urltest")) return null
+        if (type in setOf("direct", "block", "dns", "selector", "balancer")) return null
         if (server.isBlank() || port !in 1..65535) return null
 
         val tls = obj["tls"] as? JsonObject

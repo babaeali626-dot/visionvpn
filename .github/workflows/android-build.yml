@@ -11,12 +11,12 @@ permissions:
   contents: read
 
 env:
-  SING_BOX_VERSION: "v1.10.7"
+  HIDDIFY_CORE_VERSION: "v5.9.15"
   LYREBIRD_VERSION: "lyrebird-0.5.0"
   SNOWFLAKE_VERSION: "v2.10.1"
-  PSIPHON_TAG: "v2.0.41"
+  PSIPHON_TAG: "v2.0.43"
   TOR_ANDROID_VERSION: "0.4.9.17"
-  ANDROID_NDK_VERSION: "28.0.13004108"
+  ANDROID_NDK_VERSION: "30.0.16248370"
   GOPROXY: "https://proxy.golang.org|direct"
 
 jobs:
@@ -35,87 +35,66 @@ jobs:
           java-version: "17"
           distribution: "temurin"
 
-      - name: Set up Android SDK & NDK r28 (16 KB Default Alignment)
+      - name: Set up Android SDK & NDK r30 (16 KB Default Alignment)
         uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-35 build-tools;35.0.0 ndk;28.0.13004108"
+          packages: "platform-tools platforms;android-36 build-tools;36.0.0 ndk;30.0.16248370"
 
-      - name: Set up Go 1.23
+      - name: Set up Go required by Hiddify Core
         uses: actions/setup-go@v7
         with:
-          go-version: "1.23"
+          go-version: "1.27.3"
           cache: false
 
-      - name: Cache Sing-box libbox.aar
-        id: cache-libbox
+      - name: Set up Node.js for Hiddify Core build tooling
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Cache Hiddify Core AAR
+        id: cache-hiddify-core
         uses: actions/cache@v6
         with:
-          path: app/libs/libbox.aar
-          key: libbox-android-${{ env.SING_BOX_VERSION }}-ndk-${{ env.ANDROID_NDK_VERSION }}-16kb-v1
+          path: app/libs/hiddify-core.aar
+          key: hiddify-core-android-${{ env.HIDDIFY_CORE_VERSION }}-go-1.27.3-ndk-${{ env.ANDROID_NDK_VERSION }}-16kb-v3
 
-      - name: Build pinned Sing-box libbox.aar (v1.10.7) with NDK r28
-        if: steps.cache-libbox.outputs.cache-hit != 'true'
+      - name: Build official Hiddify Core Android AAR with 16 KB page alignment
+        if: steps.cache-hiddify-core.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          retry() {
-            local max_attempts=5 delay=5 attempt=1 status=0
-            until "$@"; do
-              status=$?
-              if [ "$attempt" -ge "$max_attempts" ]; then
-                echo "Command failed after ${attempt} attempts: $*" >&2
-                return "$status"
-              fi
-              echo "Command failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s: $*" >&2
-              sleep "$delay"
-              attempt=$((attempt + 1))
-              delay=$((delay * 2))
-            done
-          }
-          download_go_mods() {
-            local mod_dir="$1"
-            if [[ ! -f "${mod_dir}/go.mod" ]]; then
-              echo "ERROR: Expected go.mod missing in module root: ${mod_dir}" >&2
-              return 2
-            fi
-            (
-              cd "$mod_dir"
-              local max_attempts=5 delay=5 attempt=1 out="" status=0
-              while true; do
-                if out=$(go mod download 2>&1); then
-                  [[ -n "$out" ]] && echo "$out"
-                  return 0
-                else
-                  status=$?
-                fi
-                echo "$out" >&2
-                if grep -Eqi "no modules specified|go\.mod file not found|invalid go version|cannot find module" <<< "$out"; then
-                  echo "Deterministic Go module error detected; aborting without retry." >&2
-                  return "$status"
-                fi
-                if [ "$attempt" -ge "$max_attempts" ]; then
-                  echo "go mod download failed after ${attempt} attempts in ${mod_dir}" >&2
-                  return "$status"
-                fi
-                echo "Transient go mod download failure (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..." >&2
-                sleep "$delay"
-                attempt=$((attempt + 1))
-                delay=$((delay * 2))
-              done
-            )
-          }
           export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"
-          export CGO_LDFLAGS="-Wl,-z,max-page-size=16384"
+          export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}"
+          export CGO_LDFLAGS="-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"
           mkdir -p app/libs
-          retry go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.3
-          retry go install github.com/sagernet/gomobile/cmd/gobind@v0.1.3
-          gomobile init
-          rm -rf /tmp/sing-box
-          retry git clone --depth 1 --single-branch --branch "${SING_BOX_VERSION}" https://github.com/SagerNet/sing-box.git /tmp/sing-box
-          echo "sing-box-commit=$(git -C /tmp/sing-box rev-parse HEAD)" >> /tmp/resolved-commits.txt
-          download_go_mods /tmp/sing-box
-          cd /tmp/sing-box
-          retry go run ./cmd/internal/build_libbox -target android -platform android/arm64,android/arm,android/amd64
-          cp libbox.aar "${GITHUB_WORKSPACE}/app/libs/libbox.aar"
+          rm -rf /tmp/hiddify-core
+          git clone --depth 1 --single-branch --recurse-submodules --branch "${HIDDIFY_CORE_VERSION}" https://github.com/hiddify/hiddify-core.git /tmp/hiddify-core
+          echo "hiddify-core-commit=$(git -C /tmp/hiddify-core rev-parse HEAD)" >> /tmp/resolved-commits.txt
+          cd /tmp/hiddify-core
+          make android
+          test -s bin/hiddify-core.aar
+          cp bin/hiddify-core.aar "${GITHUB_WORKSPACE}/app/libs/hiddify-core.aar"
+
+      - name: Verify Hiddify Core AAR API contract
+        run: |
+          set -euo pipefail
+          test -s app/libs/hiddify-core.aar
+          unzip -p app/libs/hiddify-core.aar classes.jar > /tmp/hiddify-core-classes.jar
+          for class in \
+            'com/hiddify/core/libbox/Libbox.class' \
+            'com/hiddify/core/libbox/PlatformInterface.class' \
+            'com/hiddify/core/libbox/StringIterator.class' \
+            'com/hiddify/core/libbox/NetworkInterface.class' \
+            'com/hiddify/core/libbox/NetworkInterfaceIterator.class' \
+            'com/hiddify/core/mobile/Mobile.class' \
+            'com/hiddify/core/mobile/SetupOptions.class'; do
+            if ! jar tf /tmp/hiddify-core-classes.jar | grep -Fxq "$class"; then
+              echo "Required Hiddify Core API class missing from AAR: $class" >&2
+              exit 1
+            fi
+          done
+          javap -classpath /tmp/hiddify-core-classes.jar com.hiddify.core.mobile.SetupOptions | grep -q 'setFixAndroidStack(boolean)'
+          javap -classpath /tmp/hiddify-core-classes.jar com.hiddify.core.mobile.Mobile | grep -q 'setup(com.hiddify.core.mobile.SetupOptions, com.hiddify.core.libbox.PlatformInterface)'
+          echo "Hiddify Core ${HIDDIFY_CORE_VERSION} AAR contains Mobile.setup, its SetupOptions and the Android stack workaround."
 
       - name: Build pinned Tor Pluggable Transports (lyrebird & snowflake) for all advertised ABIs
         run: |
@@ -312,7 +291,7 @@ jobs:
           retry git clone --depth 1 --single-branch --branch "${PSIPHON_TAG}" https://github.com/Psiphon-Labs/psiphon-tunnel-core.git /tmp/psiphon
           echo "psiphon-commit=$(git -C /tmp/psiphon rev-parse HEAD)" >> /tmp/resolved-commits.txt
 
-          # Detect module root explicitly (Psiphon v2.0.41 has root-level go.mod)
+          # Detect module root explicitly (Psiphon v2.0.43 has root-level go.mod)
           if [[ -f /tmp/psiphon/go.mod ]]; then
             PSIPHON_MOD_ROOT="/tmp/psiphon"
             PSIPHON_PKG="./ConsoleClient"
@@ -329,9 +308,9 @@ jobs:
           echo "Active Go toolchain for Psiphon: $(go version)"
           echo "Resolved anet dependency (if present): $(go list -m github.com/wlynxg/anet 2>/dev/null || echo 'not listed')"
 
-          # Psiphon v2.0.41 pulls in github.com/wlynxg/anet via its pion/webrtc in-proxy stack on Android
+          # Psiphon v2.0.43 pulls in github.com/wlynxg/anet via its pion/webrtc in-proxy stack on Android
           # (workaround for Android 11+ NETLINK_ROUTE restrictions, golang/go#40569 & #68082).
-          # anet uses //go:linkname net.zoneCache, rejected by default on Go 1.23+ (including go1.26.5);
+          # anet uses //go:linkname net.zoneCache, rejected by default on Go 1.23+ (including current Go toolchains);
           # see github.com/wlynxg/anet#11. Scoped strictly to Psiphon ConsoleClient builds.
           build_android_go arm64 "${GITHUB_WORKSPACE}/app/src/main/jniLibs/arm64-v8a/libpsiphon.so" "${PSIPHON_PKG}" "-checklinkname=0"
           build_android_go arm "${GITHUB_WORKSPACE}/app/src/main/jniLibs/armeabi-v7a/libpsiphon.so" "${PSIPHON_PKG}" "-checklinkname=0"
@@ -340,7 +319,7 @@ jobs:
       - name: Assert ELF Architectures, Verify Mandatory Binaries & Generate SBOM/Provenance
         run: |
           set -euo pipefail
-          test -s app/libs/libbox.aar
+          test -s app/libs/hiddify-core.aar
           declare -A EXPECTED_ARCH=(
             ["arm64-v8a"]="AArch64"
             ["armeabi-v7a"]="ARM"
@@ -355,7 +334,7 @@ jobs:
             done
           done
           {
-            echo "sing-box=${SING_BOX_VERSION}"
+            echo "hiddify-core=${HIDDIFY_CORE_VERSION}"
             echo "lyrebird=${LYREBIRD_VERSION}"
             echo "snowflake=${SNOWFLAKE_VERSION}"
             echo "psiphon=${PSIPHON_TAG}"
@@ -364,13 +343,13 @@ jobs:
             if [ -f /tmp/resolved-commits.txt ]; then
               cat /tmp/resolved-commits.txt
             fi
-            sha256sum app/libs/libbox.aar app/src/main/jniLibs/*/*.so
+            sha256sum app/libs/hiddify-core.aar app/src/main/jniLibs/*/*.so
           } | tee build-provenance.txt
           cat > sbom-components.json <<EOF
           {
             "bomFormat": "VisionVPN-SBOM",
             "components": [
-              {"name": "sing-box", "version": "${SING_BOX_VERSION}", "license": "GPL-3.0-or-later"},
+              {"name": "hiddify-core", "version": "${HIDDIFY_CORE_VERSION}", "license": "GPL-3.0-or-later"},
               {"name": "tor-android", "version": "${TOR_ANDROID_VERSION}", "license": "BSD-3-Clause"},
               {"name": "lyrebird", "version": "${LYREBIRD_VERSION}", "license": "BSD-3-Clause"},
               {"name": "snowflake", "version": "${SNOWFLAKE_VERSION}", "license": "BSD-3-Clause"},
@@ -382,7 +361,7 @@ jobs:
       - name: Setup Gradle (or use verified ./gradlew when gradle-wrapper.jar is committed)
         uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: "8.10.2"
+          gradle-version: "8.13"
 
       - name: Run Automated Unit Tests
         run: |
@@ -416,7 +395,7 @@ jobs:
           else
             gradle assembleRelease --no-daemon --stacktrace
           fi
-          "${ANDROID_HOME}/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/release/app-release.apk
+          "${ANDROID_HOME}/build-tools/36.0.0/apksigner" verify --verbose app/build/outputs/apk/release/app-release.apk
 
       - name: Build Unsigned Release APK (Test-Only Validation when secrets absent)
         if: ${{ env.HAS_RELEASE_KEYSTORE != 'true' }}
@@ -429,7 +408,7 @@ jobs:
           fi
           UNSIGNED_APK="app/build/outputs/apk/release/app-release-unsigned.apk"
           if [ -f "${UNSIGNED_APK}" ]; then
-            "${ANDROID_HOME}/build-tools/35.0.0/zipalign" -P 16 -f 4 "${UNSIGNED_APK}" "${UNSIGNED_APK}.aligned"
+            "${ANDROID_HOME}/build-tools/36.0.0/zipalign" -P 16 -f 4 "${UNSIGNED_APK}" "${UNSIGNED_APK}.aligned"
             mv "${UNSIGNED_APK}.aligned" "${UNSIGNED_APK}"
           fi
 

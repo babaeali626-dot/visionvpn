@@ -1,7 +1,9 @@
-# Preserve Sing-box libbox JNI & Go-bound classes
--keep class io.nekohasekai.libbox.** { *; }
+# Preserve Hiddify Core libbox JNI & Go-bound classes; the bridge accesses these reflectively.
+-keep class com.hiddify.core.libbox.** { *; }
+-keep class com.hiddify.core.mobile.** { *; }
 -keep class go.** { *; }
--dontwarn io.nekohasekai.libbox.**
+-dontwarn com.hiddify.core.libbox.**
+-dontwarn com.hiddify.core.mobile.**
 -dontwarn go.**
 
 # Preserve Tor Android JNI & service classes

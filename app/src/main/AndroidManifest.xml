@@ -31,7 +31,7 @@
         android:roundIcon="@drawable/ic_vpn_key"
         android:supportsRtl="true"
         android:theme="@style/Theme.VisionVPN"
-        tools:targetApi="35">
+        tools:targetApi="36">
 
         <activity
             android:name=".MainActivity"

@@ -18,6 +18,13 @@ enum class DnsStrategy(val singBoxValue: String, val label: String) {
 }
 
 @Serializable
+enum class BalancerStrategy(val coreValue: String, val label: String, val description: String) {
+    ROUND_ROBIN("round-robin", "Round robin", "Rotate new connections across healthy selected servers."),
+    CONSISTENT_HASH("consistent-hashing", "Consistent hash", "Keep the same destination on the same server when possible."),
+    STICKY_SESSION("sticky-sessions", "Sticky session", "Keep a client/destination on one server for a sticky session.")
+}
+
+@Serializable
 enum class Ipv6Policy(val labelEn: String, val labelFa: String) {
     BLOCK_IPV6("Block IPv6 (Leak-Proof)", "مسدودسازی IPv6 (ضد نشت)"),
     TUNNEL_IPV6("Tunnel IPv6 via VPN", "عبور IPv6 از تونل")
@@ -64,20 +71,35 @@ data class AppSettings(
     val latencyTestUrl: String = "https://www.gstatic.com/generate_204",
     /** Preserve historical behavior by default; users may retain their imported/manual order. */
     val autoSortAfterLatencyTest: Boolean = true,
-    /** Sing-box core log verbosity; secrets are still redacted by VisionVPN's log path. */
+    /** Hiddify Core log verbosity; secrets are still redacted by VisionVPN's log path. */
     val coreLogLevel: String = "info",
     /** Parallel HTTPS probes share one headless Libbox instance; never one native runtime per profile. */
     val latencyProbeConcurrency: Int = 20,
-    /** Manual speed-test payload only; Smart Connect never downloads this payload. */
+    /** Manual speed-test payload only; the balancer never downloads this payload. */
     val speedTestDownloadSizeMiB: Int = 1,
-    /** Enable Sing-box v1.10.7 ECH auto-discovery for compatible TLS outbounds. */
+    /** Enable Hiddify Core ECH auto-discovery for compatible TLS outbounds. */
     val echAutoEnabled: Boolean = false,
-    /** Home-screen URLTest group. It is only applied to simple imported-proxy routes. */
-    val smartConnectEnabled: Boolean = false,
-    val smartConnectProfileIds: Set<String> = emptySet(),
-    val smartConnectIntervalSeconds: Int = 60,
-    val smartConnectCandidateCount: Int = 20,
-    val smartConnectToleranceMs: Int = 50,
+    /** Hiddify Core balancer is applied only to a single imported-proxy route. */
+    val balancerEnabled: Boolean = false,
+    val balancerProfileIds: Set<String> = emptySet(),
+    val balancerIntervalSeconds: Int = 60,
+    val balancerCandidateCount: Int = 20,
+    val balancerStrategy: BalancerStrategy = BalancerStrategy.ROUND_ROBIN,
+    /** Hiddify TLS fragment. Padding and fragmentation are mutually exclusive. */
+    val tlsFragmentEnabled: Boolean = false,
+    val tlsFragmentMethod: String = "tlsHello",
+    val tlsFragmentRange: String = "1-3",
+    val tlsFragmentSize: String = "10-30",
+    val tlsFragmentSleep: String = "2-8",
+    val tlsMixedSniCase: Boolean = false,
+    val tlsPaddingEnabled: Boolean = false,
+    val tlsPaddingSize: String = "800-1200",
+    /** Legacy Smart Connect fields remain for one-time JSON migration only. */
+    @Deprecated("Use balancerEnabled") val smartConnectEnabled: Boolean = false,
+    @Deprecated("Use balancerProfileIds") val smartConnectProfileIds: Set<String> = emptySet(),
+    @Deprecated("Use balancerIntervalSeconds") val smartConnectIntervalSeconds: Int = 60,
+    @Deprecated("Removed by Hiddify balancer strategies") val smartConnectCandidateCount: Int = 20,
+    @Deprecated("Removed by Hiddify balancer strategies") val smartConnectToleranceMs: Int = 50,
     /** Conservative Android VPN MTU; 9000-byte jumbo frames are not portable on mobile paths. */
     val mtu: Int = 1500,
     val language: AppLanguage = AppLanguage.ENGLISH,
@@ -90,7 +112,7 @@ data class AppSettings(
         get() = VisionThemeVariant.VISION_NAVY
 
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 5
+        const val CURRENT_SCHEMA_VERSION = 6
     }
 }
 

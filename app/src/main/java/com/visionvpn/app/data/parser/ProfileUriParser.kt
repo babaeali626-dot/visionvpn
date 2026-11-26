@@ -394,7 +394,7 @@ object ProfileUriParser {
 
     /**
      * Extracts Xray/V2Ray WebSocket early-data query parameter (`?ed=2048` or `&ed=2048`)
-     * into Sing-box v1.10.7 `max_early_data` + `early_data_header_name = "Sec-WebSocket-Protocol"`.
+     * into Hiddify Core v5 `max_early_data` + `early_data_header_name = "Sec-WebSocket-Protocol"`.
      */
     internal fun extractWsEarlyData(rawPath: String): Triple<String, Int, String> {
         if (rawPath.isBlank()) return Triple("", 0, "")

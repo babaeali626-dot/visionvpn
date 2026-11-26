@@ -346,7 +346,7 @@ class StabilitySecurityAndProfilesTest {
     }
 
     // -------------------------------------------------------------------------
-    // P3. REALITY Validation & Generated Sing-box v1.10.7 JSON
+    // P3. REALITY Validation & Generated Hiddify Core (Sing-box fork v1.13.0) JSON
     // -------------------------------------------------------------------------
 
     @Test
@@ -380,7 +380,7 @@ class StabilitySecurityAndProfilesTest {
         )
         assertTrue(builder.validateProfile(badFp).isFailure)
 
-        // Valid REALITY profile emits exact Sing-box v1.10.7 JSON with insecure=false and utls enabled
+        // Valid REALITY profile emits exact Hiddify Core (Sing-box fork v1.13.0) JSON with insecure=false and utls enabled
         val validReality = syntheticProfile(2).copy(
             security = "reality",
             realityPublicKey = validRealityPubKey32Bytes,

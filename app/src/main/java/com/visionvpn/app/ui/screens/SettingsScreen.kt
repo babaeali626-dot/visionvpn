@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import com.visionvpn.app.chain.TorBridgeValidator
 import com.visionvpn.app.data.model.AppLanguage
 import com.visionvpn.app.data.model.AppSettings
+import com.visionvpn.app.data.model.BalancerStrategy
 import com.visionvpn.app.data.model.ChainExitType
 import com.visionvpn.app.data.model.DnsStrategy
 import com.visionvpn.app.data.model.InstalledAppInfo
@@ -141,7 +142,7 @@ fun SettingsScreen(
                 text = if (isPersian) {
                     "مهلت هر درخواست HTTPS برای آزمون پروفایل؛ این مقدار مستقل از مهلت راه‌اندازی موتور است."
                 } else {
-                    "Per-request HTTPS timeout for profile tests. This is separate from the native engine startup timeout."
+                    "This records HTTPS round-trip time through each selected proxy using a temporary local probe. It is not ICMP ping and is not the active Hiddify Core per-outbound monitor stream."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = VisionColors.TextSecondary
@@ -221,7 +222,7 @@ fun SettingsScreen(
                 steps = 98
             )
             Text(
-                "Manual speed test only. This amount is streamed through the active VPN tunnel; Smart Connect never downloads this payload. Large values use mobile data.",
+                "Manual speed test only. This amount is streamed through the active VPN tunnel; Balancer never downloads this payload. Large values use mobile data.",
                 style = MaterialTheme.typography.labelSmall,
                 color = VisionColors.AmberWarning
             )
@@ -259,79 +260,156 @@ fun SettingsScreen(
             )
         }
 
-        // Smart Connect settings used by the real Sing-box urltest group.
+        // Hiddify Core balancer settings: exactly the three requested strategies.
         GlassCard(modifier = Modifier.fillMaxWidth()) {
-            Text("Smart Connect", style = MaterialTheme.typography.titleMedium)
+            Text("Balancer", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Only profiles selected on Home are eligible. The URLTest group includes up to the configured candidate count in current profile order; extra selected profiles are not rotated into later rounds.",
+                "Choose eligible profiles on the Home screen, then select how new connections are distributed. This is the native Hiddify Core balancer, not a fastest-server URLTest shortcut.",
                 style = MaterialTheme.typography.bodySmall,
                 color = VisionColors.TextSecondary
             )
-            var intervalDraft by remember(settings.smartConnectIntervalSeconds) {
-                mutableStateOf(settings.smartConnectIntervalSeconds.coerceIn(15, 3600))
+            BalancerStrategy.values().forEach { strategy ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FilterChip(
+                        selected = settings.balancerStrategy == strategy,
+                        onClick = { onUpdateSettings { it.copy(balancerStrategy = strategy) } },
+                        label = { Text(strategy.label) }
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        strategy.description,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = VisionColors.TextSecondary
+                    )
+                }
+            }
+            var intervalDraft by remember(settings.balancerIntervalSeconds) {
+                mutableStateOf(settings.balancerIntervalSeconds.coerceIn(15, 3600))
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Test interval", modifier = Modifier.weight(1f))
+                Text("Health-check interval", modifier = Modifier.weight(1f))
                 Text("$intervalDraft s", color = VisionColors.CyanHighlight)
             }
             Slider(
                 value = intervalDraft.toFloat(),
                 onValueChange = { intervalDraft = it.roundToInt().coerceIn(15, 3600) },
-                onValueChangeFinished = { onUpdateSettings { it.copy(smartConnectIntervalSeconds = intervalDraft) } },
+                onValueChangeFinished = { onUpdateSettings { it.copy(balancerIntervalSeconds = intervalDraft) } },
                 valueRange = 15f..3600f,
                 steps = 238
             )
-            var candidatesDraft by remember(settings.smartConnectCandidateCount) {
-                mutableStateOf(settings.smartConnectCandidateCount.coerceIn(2, 100))
+            var candidatesDraft by remember(settings.balancerCandidateCount) {
+                mutableStateOf(settings.balancerCandidateCount.coerceIn(2, 100))
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Candidates in URLTest group (2–100)", modifier = Modifier.weight(1f))
+                Text("Maximum selected servers (2–100)", modifier = Modifier.weight(1f))
                 Text(candidatesDraft.toString(), color = VisionColors.CyanHighlight)
             }
             Slider(
                 value = candidatesDraft.toFloat(),
                 onValueChange = { candidatesDraft = it.roundToInt().coerceIn(2, 100) },
-                onValueChangeFinished = { onUpdateSettings { it.copy(smartConnectCandidateCount = candidatesDraft) } },
+                onValueChangeFinished = { onUpdateSettings { it.copy(balancerCandidateCount = candidatesDraft) } },
                 valueRange = 2f..100f,
                 steps = 97
             )
-            var toleranceDraft by remember(settings.smartConnectToleranceMs) {
-                mutableStateOf(settings.smartConnectToleranceMs.coerceIn(1, 500))
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Switch tolerance", modifier = Modifier.weight(1f))
-                Text("$toleranceDraft ms", color = VisionColors.CyanHighlight)
-            }
-            Slider(
-                value = toleranceDraft.toFloat(),
-                onValueChange = { toleranceDraft = it.roundToInt().coerceIn(1, 500) },
-                onValueChangeFinished = { onUpdateSettings { it.copy(smartConnectToleranceMs = toleranceDraft) } },
-                valueRange = 1f..500f,
-                steps = 49
-            )
             Text(
-                "Smart Connect is supported for a single imported proxy route in this build. It pauses/rejects unsupported local-engine chains instead of silently changing their meaning.",
+                "Balancer currently supports one imported-proxy route. Tor/Psiphon/WARP chain composition is not silently rewritten into a balancer.",
                 style = MaterialTheme.typography.labelSmall,
                 color = VisionColors.AmberWarning
             )
         }
 
-        // Connection security options verified against the pinned upstream Sing-box v1.10.7 schema.
+        // TLS Tricks controls based on Hiddify's connection-security settings.
         GlassCard(modifier = Modifier.fillMaxWidth()) {
-            Text("Connection Security", style = MaterialTheme.typography.titleMedium)
+            Text("TLS Tricks & Security", style = MaterialTheme.typography.titleMedium)
+            var fragmentRangeDraft by remember(settings.tlsFragmentRange) { mutableStateOf(settings.tlsFragmentRange) }
+            var fragmentSizeDraft by remember(settings.tlsFragmentSize) { mutableStateOf(settings.tlsFragmentSize) }
+            var fragmentSleepDraft by remember(settings.tlsFragmentSleep) { mutableStateOf(settings.tlsFragmentSleep) }
+            var paddingSizeDraft by remember(settings.tlsPaddingSize) { mutableStateOf(settings.tlsPaddingSize) }
             SettingsSwitchRow(
-                title = "Automatic ECH (TLS Encrypted Client Hello)",
+                title = "Automatic ECH (Encrypted Client Hello)",
                 checked = settings.echAutoEnabled,
                 onCheckedChange = { enabled -> onUpdateSettings { it.copy(echAutoEnabled = enabled) } }
             )
             Text(
-                "ECH auto-discovery is emitted only for TLS-capable non-REALITY outbounds. The core may discover ECH config through DNS; enabling this option does not guarantee the server negotiates ECH.",
+                "ECH is attempted only for compatible TLS outbounds and depends on DNS support and server negotiation.",
                 style = MaterialTheme.typography.labelSmall,
                 color = VisionColors.TextSecondary
             )
             Spacer(modifier = Modifier.height(8.dp))
+            SettingsSwitchRow(
+                title = "TLS fragmentation",
+                checked = settings.tlsFragmentEnabled,
+                onCheckedChange = { enabled -> onUpdateSettings { it.copy(tlsFragmentEnabled = enabled, tlsPaddingEnabled = if (enabled) false else it.tlsPaddingEnabled) } }
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = settings.tlsFragmentMethod == "tlsHello",
+                    onClick = { onUpdateSettings { it.copy(tlsFragmentMethod = "tlsHello") } },
+                    label = { Text("TLS Hello") }
+                )
+                FilterChip(
+                    selected = settings.tlsFragmentMethod == "range",
+                    onClick = { onUpdateSettings { it.copy(tlsFragmentMethod = "range") } },
+                    label = { Text("Packet range") }
+                )
+            }
+            if (settings.tlsFragmentMethod == "range") {
+                OutlinedTextField(
+                    value = fragmentRangeDraft,
+                    onValueChange = { value -> fragmentRangeDraft = value },
+                    label = { Text("Fragment packet range (1–5)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            OutlinedTextField(
+                value = fragmentSizeDraft,
+                onValueChange = { value -> fragmentSizeDraft = value },
+                label = { Text("Fragment size range (bytes)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = fragmentSleepDraft,
+                onValueChange = { value -> fragmentSleepDraft = value },
+                label = { Text("Fragment delay range (ms)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            SettingsSwitchRow(
+                title = "Mixed-case SNI",
+                checked = settings.tlsMixedSniCase,
+                onCheckedChange = { enabled -> onUpdateSettings { it.copy(tlsMixedSniCase = enabled) } }
+            )
+            SettingsSwitchRow(
+                title = "TLS random padding",
+                checked = settings.tlsPaddingEnabled,
+                onCheckedChange = { enabled -> onUpdateSettings { it.copy(tlsPaddingEnabled = enabled, tlsFragmentEnabled = if (enabled) false else it.tlsFragmentEnabled) } }
+            )
+            if (settings.tlsPaddingEnabled) {
+                OutlinedTextField(
+                    value = paddingSizeDraft,
+                    onValueChange = { value -> paddingSizeDraft = value },
+                    label = { Text("Padding size range (bytes)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            TextButton(
+                onClick = {
+                    onUpdateSettings {
+                        it.copy(
+                            tlsFragmentRange = fragmentRangeDraft,
+                            tlsFragmentSize = fragmentSizeDraft,
+                            tlsFragmentSleep = fragmentSleepDraft,
+                            tlsPaddingSize = paddingSizeDraft
+                        )
+                    }
+                }
+            ) { Text("Apply TLS values") }
             Text(
-                "TLS Fragmentation, Fragment Connection and Hiddify Finalmask are not available in the currently bundled upstream Sing-box v1.10.7 core. They are intentionally not exposed as fake switches; the Hiddify fork requires a separate native-core build and license/dependency review.",
+                "Fragmentation and padding are mutually exclusive. Padding is emitted only for non-REALITY TLS profiles with a fixed uTLS fingerprint; it is ignored for REALITY, Hysteria2/TUIC and random fingerprints. Test one technique at a time because either can increase latency or break compatibility. Finalmask and Fragment Connection are not enabled because their full behavior is not implemented in this app.",
                 style = MaterialTheme.typography.labelSmall,
                 color = VisionColors.AmberWarning
             )
@@ -355,7 +433,7 @@ fun SettingsScreen(
             Text("Default 1500. Jumbo-frame MTU values are avoided because most mobile/Wi-Fi paths do not support 9000-byte packets end-to-end.", style = MaterialTheme.typography.labelSmall, color = VisionColors.TextSecondary)
         }
 
-        // Logs & Diagnostics: this value is consumed by the generated Sing-box log config.
+        // Logs & Diagnostics: this value is consumed by the generated Hiddify Core log config.
         GlassCard(modifier = Modifier.fillMaxWidth()) {
             Text("Logs & Diagnostics", style = MaterialTheme.typography.titleMedium)
             Text("Core log level", style = MaterialTheme.typography.bodyMedium)
@@ -389,7 +467,7 @@ fun SettingsScreen(
         GlassCard(modifier = Modifier.fillMaxWidth()) {
             Text("About", style = MaterialTheme.typography.titleMedium)
             Text("VisionVPN ${com.visionvpn.app.BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium)
-            Text("Sing-box / Libbox v1.10.7 • Android VpnService", style = MaterialTheme.typography.labelSmall, color = VisionColors.TextSecondary)
+            Text("Hiddify Core v${com.visionvpn.app.BuildConfig.HIDDIFY_CORE_VERSION} • Android VpnService", style = MaterialTheme.typography.labelSmall, color = VisionColors.TextSecondary)
         }
 
         // A. VPN Routing & Exit Provider (Synced with Chain Manager)

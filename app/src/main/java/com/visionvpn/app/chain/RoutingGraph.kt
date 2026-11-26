@@ -40,7 +40,7 @@ sealed class RoutingNode {
             /**
              * Conservative per-profile capability derivation based on protocol and transport.
              * Native UDP protocols (WireGuard/Hysteria2/TUIC) and direct TCP stream proxies
-             * (VLESS/VMess/Trojan/Shadowsocks over raw TCP) support UDP relay in Sing-box v1.10.7.
+             * (VLESS/VMess/Trojan/Shadowsocks over raw TCP) are supported for UDP relay by the pinned Hiddify Core engine.
              * SOCKS5 (unconfirmed UDP ASSOCIATE) and HTTP/CDN transports (ws/grpc/httpupgrade)
              * are conservatively treated as TCP-only so nested WireGuard/WARP hops are rejected.
              */

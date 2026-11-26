@@ -5,6 +5,7 @@ import com.visionvpn.app.chain.RoutingNode
 import com.visionvpn.app.core.ConfigBuilder
 import com.visionvpn.app.core.VpnCoreController
 import com.visionvpn.app.data.model.AppSettings
+import com.visionvpn.app.data.model.BalancerStrategy
 import com.visionvpn.app.data.model.ChainConfig
 import com.visionvpn.app.data.model.ChainExitType
 import com.visionvpn.app.data.model.Ipv6Policy
@@ -230,7 +231,7 @@ class RoutingGraphAndConfigBuilderTest {
     }
 
     @Test
-    fun `Smart Connect builds URLTest only from explicitly selected validated profiles`() {
+    fun `Hiddify balancer uses the selected strategy and only explicitly selected profiles`() {
         val second = entryVless.copy(
             id = "p-selected-2",
             name = "Selected-2",
@@ -246,27 +247,75 @@ class RoutingGraphAndConfigBuilderTest {
             rawUri = "vless://11111111-1111-1111-1111-111111111111@other.example.com:443?security=tls"
         )
         val graph = RoutingGraph.build(entryVless, ChainConfig(), listOf(entryVless)).getOrThrow()
-        val settings = AppSettings(
-            smartConnectEnabled = true,
-            smartConnectProfileIds = setOf(entryVless.id, second.id),
-            smartConnectIntervalSeconds = 60,
-            smartConnectCandidateCount = 20,
-            smartConnectToleranceMs = 50
-        )
+        BalancerStrategy.values().forEach { strategy ->
+            val settings = AppSettings(
+                balancerEnabled = true,
+                balancerProfileIds = setOf(entryVless.id, second.id),
+                balancerIntervalSeconds = 60,
+                balancerCandidateCount = 20,
+                balancerStrategy = strategy
+            )
 
-        val config = json.parseToJsonElement(
-            builder.buildSingBoxConfig(graph, settings, listOf(entryVless, second, unselected))
+            val config = json.parseToJsonElement(
+                builder.buildSingBoxConfig(graph, settings, listOf(entryVless, second, unselected))
+            ).jsonObject
+            val outbounds = config["outbounds"]!!.jsonArray.map { it.jsonObject }
+            val group = outbounds.single { it["type"]?.jsonPrimitive?.content == "balancer" }
+            val members = group["outbounds"]!!.jsonArray.map { it.jsonPrimitive.content }
+
+            assertEquals(2, members.size)
+            assertEquals(strategy.coreValue, group["strategy"]!!.jsonPrimitive.content)
+            assertNull(group["interval"])
+            assertNull(group["url"])
+            assertNull(group["idle_timeout"])
+            val monitoring = config["experimental"]!!.jsonObject["monitoring"]!!.jsonObject
+            assertEquals("60s", monitoring["interval"]!!.jsonPrimitive.content)
+            assertEquals(ConfigBuilder.BALANCER_GROUP_TAG, config["route"]!!.jsonObject["final"]!!.jsonPrimitive.content)
+            assertTrue(outbounds.none { it["tag"]?.jsonPrimitive?.content?.contains("p-not-selected") == true })
+            assertTrue(members.all { tag -> outbounds.any { it["tag"]?.jsonPrimitive?.content == tag } })
+            assertNotNull(config["experimental"]!!.jsonObject["monitoring"])
+        }
+    }
+
+    @Test
+    fun `TLS fragmentation and padding are emitted under Hiddify Core schema and cannot coexist`() {
+        val graph = RoutingGraph.build(entryVless, ChainConfig(), listOf(entryVless)).getOrThrow()
+        val fragmented = AppSettings(tlsFragmentEnabled = true, tlsFragmentMethod = "range", tlsFragmentRange = "1-3")
+        val config = json.parseToJsonElement(builder.buildSingBoxConfig(graph, fragmented)).jsonObject
+        val outbound = config["outbounds"]!!.jsonArray.single { it.jsonObject["tag"]?.jsonPrimitive?.content == graph.nodes.first().tag }.jsonObject
+        assertEquals("range", outbound["tls_fragment"]!!.jsonObject["method"]!!.jsonPrimitive.content)
+        assertEquals("1-3", outbound["tls_fragment"]!!.jsonObject["range"]!!.jsonPrimitive.content)
+
+        val invalid = AppSettings(tlsFragmentEnabled = true, tlsPaddingEnabled = true)
+        assertTrue(runCatching { builder.buildSingBoxConfig(graph, invalid) }.isFailure)
+    }
+
+    @Test
+    fun `TLS padding is emitted only for fixed uTLS TLS and omitted for REALITY`() {
+        val graph = RoutingGraph.build(entryVless, ChainConfig(), listOf(entryVless)).getOrThrow()
+        val fixedTlsProfile = entryVless.copy(fingerprint = "chrome")
+        val fixedTlsGraph = RoutingGraph.build(fixedTlsProfile, ChainConfig(), listOf(fixedTlsProfile)).getOrThrow()
+        val padded = json.parseToJsonElement(
+            builder.buildSingBoxConfig(fixedTlsGraph, AppSettings(tlsPaddingEnabled = true))
         ).jsonObject
-        val outbounds = config["outbounds"]!!.jsonArray.map { it.jsonObject }
-        val group = outbounds.single { it["type"]?.jsonPrimitive?.content == "urltest" }
-        val members = group["outbounds"]!!.jsonArray.map { it.jsonPrimitive.content }
+        val paddedOutbound = padded["outbounds"]!!.jsonArray.map { it.jsonObject }
+            .single { it["tag"]?.jsonPrimitive?.content == fixedTlsGraph.nodes.first().tag }
+        val tricks = paddedOutbound["tls"]!!.jsonObject["tls_tricks"]!!.jsonObject
+        assertEquals("random", tricks["padding_mode"]!!.jsonPrimitive.content)
 
-        assertEquals(2, members.size)
-        assertEquals("60s", group["interval"]!!.jsonPrimitive.content)
-        assertEquals(50, group["tolerance"]!!.jsonPrimitive.content.toInt())
-        assertEquals(ConfigBuilder.SMART_CONNECT_GROUP_TAG, config["route"]!!.jsonObject["final"]!!.jsonPrimitive.content)
-        assertTrue(outbounds.none { it["tag"]?.jsonPrimitive?.content?.contains("p-not-selected") == true })
-        assertTrue(members.all { tag -> outbounds.any { it["tag"]?.jsonPrimitive?.content == tag } })
+        val reality = fixedTlsProfile.copy(
+            security = "reality",
+            realityPublicKey = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { 7 }),
+            realityShortId = "a1b2",
+            sni = "reality.example.com"
+        )
+        val realityGraph = RoutingGraph.build(reality, ChainConfig(), listOf(reality)).getOrThrow()
+        val realityConfig = json.parseToJsonElement(
+            builder.buildSingBoxConfig(realityGraph, AppSettings(tlsPaddingEnabled = true, tlsMixedSniCase = true))
+        ).jsonObject
+        val realityOutbound = realityConfig["outbounds"]!!.jsonArray.map { it.jsonObject }
+            .single { it["tag"]?.jsonPrimitive?.content == realityGraph.nodes.first().tag }
+        assertNull(realityOutbound["tls"]!!.jsonObject["tls_tricks"])
     }
 
     @Test

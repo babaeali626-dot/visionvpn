@@ -23,7 +23,7 @@ val hasCompleteReleaseSigning = !releaseKeystorePath.isNullOrBlank() &&
 
 // VisionVPN launches libtor.so directly; it does not consume Tor Android's AAR classes.
 // Resolve the AAR as a native-only artifact so its compileSdk 37 metadata does not become
-// an Android compile-classpath requirement for this API 35 / AGP 8.7.3 application.
+// an Android compile-classpath requirement for this API 36 / AGP 8.13.2 application.
 val torAndroidVersion = "0.4.9.17"
 val torAndroidNativeAar by configurations.creating {
     isCanBeConsumed = false
@@ -33,14 +33,15 @@ val torAndroidNativeAar by configurations.creating {
 
 android {
     namespace = "com.visionvpn.app"
-    compileSdk = 35
+    compileSdk = 36
+    ndkVersion = "30.0.16248370"
 
     defaultConfig {
         applicationId = "com.visionvpn.app"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        targetSdk = 36
+        versionCode = 3
+        versionName = "1.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -49,7 +50,7 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
-        buildConfigField("String", "SING_BOX_PINNED_VERSION", "\"1.10.7\"")
+        buildConfigField("String", "HIDDIFY_CORE_VERSION", "\"5.9.15\"")
     }
 
     signingConfigs {
@@ -136,7 +137,7 @@ gradle.taskGraph.whenReady {
 }
 
 dependencies {
-    // Native Sing-box libbox.aar (v1.10.7 built/fetched by CI into app/libs/)
+    // Native Hiddify Core hiddify-core.aar (v5.9.15 built/fetched by CI into app/libs/)
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar", "*.aar"))))
 
     // Tor Android is resolved as a native-only AAR, not an Android compile/runtime
@@ -147,15 +148,15 @@ dependencies {
     }
 
     // Core Android & Lifecycle
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
-    implementation("androidx.activity:activity-compose:1.9.3")
-    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.core:core-ktx:1.19.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.1")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.1")
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.appcompat:appcompat:1.8.0")
 
     // Jetpack Compose BOM & Material 3
-    val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
+    val composeBom = platform("androidx.compose:compose-bom:2026.11.01")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
@@ -163,20 +164,20 @@ dependencies {
     implementation("androidx.compose.ui:ui-text-google-fonts")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.navigation:navigation-compose:2.8.5")
+    implementation("androidx.navigation:navigation-compose:2.10.2")
 
     // Coroutines & Serialization
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.13.0")
 
     // DataStore for encrypted settings, profiles, WARP keys, and Tor bridges
-    implementation("androidx.datastore:datastore-preferences:1.1.1")
+    implementation("androidx.datastore:datastore-preferences:1.3.0")
 
     // Networking (Subscriptions, Cloudflare WARP registration, Clash API WebSocket)
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp:5.5.1")
 
     // CameraX + ZXing for QR code profile scanning
-    val cameraXVersion = "1.4.0"
+    val cameraXVersion = "1.7.0"
     implementation("androidx.camera:camera-core:$cameraXVersion")
     implementation("androidx.camera:camera-camera2:$cameraXVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraXVersion")
@@ -187,7 +188,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
 }
 
 

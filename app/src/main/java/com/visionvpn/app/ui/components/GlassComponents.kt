@@ -137,11 +137,11 @@ fun LatencyPill(
             if (ms == null) {
                 "Failed" to VisionColors.CoralError
             } else if (ms < 250) {
-                "$ms ms" to VisionColors.EmeraldConnected
+                "RTT $ms ms" to VisionColors.EmeraldConnected
             } else if (ms < 600) {
-                "$ms ms" to VisionColors.AmberWarning
+                "RTT $ms ms" to VisionColors.AmberWarning
             } else {
-                "$ms ms" to VisionColors.CoralError
+                "RTT $ms ms" to VisionColors.CoralError
             }
         }
         LatencyStatus.TIMEOUT -> "Timeout" to VisionColors.CoralError

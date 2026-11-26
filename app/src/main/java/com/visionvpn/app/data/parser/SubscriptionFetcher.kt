@@ -127,7 +127,7 @@ class SubscriptionFetcher(
 
                 val request = Request.Builder()
                     .url(currentUrl)
-                    .header("User-Agent", "VisionVPN/1.1 (Sing-box/1.10.7; Android)")
+                    .header("User-Agent", "VisionVPN/1.2.0 (Hiddify-Core/5.9.15; Android)")
                     .get()
                     .build()
 

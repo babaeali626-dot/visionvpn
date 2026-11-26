@@ -23,12 +23,12 @@ class LibboxBridge(private val context: Context) {
 
     companion object {
         private const val TAG = "LibboxBridge"
-        const val SUPPORTED_SING_BOX_VERSION = BuildConfig.SING_BOX_PINNED_VERSION
-        private const val LIBBOX_CLASS = "io.nekohasekai.libbox.Libbox"
-        private const val PLATFORM_INTERFACE_CLASS = "io.nekohasekai.libbox.PlatformInterface"
-        private const val STRING_ITERATOR_CLASS = "io.nekohasekai.libbox.StringIterator"
-        private const val NETWORK_INTERFACE_CLASS = "io.nekohasekai.libbox.NetworkInterface"
-        private const val NETWORK_INTERFACE_ITERATOR_CLASS = "io.nekohasekai.libbox.NetworkInterfaceIterator"
+        const val SUPPORTED_HIDDIFY_CORE_VERSION = BuildConfig.HIDDIFY_CORE_VERSION
+        private const val LIBBOX_CLASS = "com.hiddify.core.libbox.Libbox"
+        private const val PLATFORM_INTERFACE_CLASS = "com.hiddify.core.libbox.PlatformInterface"
+        private const val STRING_ITERATOR_CLASS = "com.hiddify.core.libbox.StringIterator"
+        private const val NETWORK_INTERFACE_CLASS = "com.hiddify.core.libbox.NetworkInterface"
+        private const val NETWORK_INTERFACE_ITERATOR_CLASS = "com.hiddify.core.libbox.NetworkInterfaceIterator"
 
         /**
          * Result of validating per-app split-tunnel configuration before calling `VpnService.Builder.establish()`.
@@ -41,7 +41,7 @@ class LibboxBridge(private val context: Context) {
         /**
          * Validates and resolves the exact Android `VpnService.Builder` allow/disallow package lists.
          *
-         * - [SplitTunnelMode.DISABLED]: disallows [selfPackageName] so Sing-box and child local
+         * - [SplitTunnelMode.DISABLED]: disallows [selfPackageName] so Hiddify Core and child local
          *   engines (`libtor.so`, `libpsiphon.so`, which inherit the app UID) never loop into `tun0`.
          * - [SplitTunnelMode.BYPASS_SELECTED]: disallows [selfPackageName] plus valid external packages.
          * - [SplitTunnelMode.ONLY_SELECTED]: deduplicates, removes [selfPackageName], and verifies
@@ -108,18 +108,20 @@ class LibboxBridge(private val context: Context) {
             activeLeaseToken = leaseToken
             try {
                 val libboxClass = runCatching { Class.forName(LIBBOX_CLASS) }.getOrElse {
-                    error("Sing-box native library (libbox.aar v$SUPPORTED_SING_BOX_VERSION) is not bundled in app/libs/.")
+                    error("Hiddify Core native library (hiddify-core.aar v$SUPPORTED_HIDDIFY_CORE_VERSION) is not bundled in app/libs/.")
                 }
                 val platformInterfaceClass = Class.forName(PLATFORM_INTERFACE_CLASS)
                 validatePlatformContract(libboxClass, platformInterfaceClass)
-                LibboxRuntime.ensureInitialized(context, libboxClass)
-
                 val platformProxy = Proxy.newProxyInstance(
                     platformInterfaceClass.classLoader,
                     arrayOf(platformInterfaceClass)
                 ) { _, method, args ->
                     handlePlatformCall(method, args, vpnService, settings)
                 }
+                // Core v5 exposes SetupOptions under com.hiddify.core.mobile and requires
+                // Mobile.setup(options, PlatformInterface). Keep the libbox service API for
+                // this app's owned VpnService lifecycle, but initialize it through the v5 API.
+                LibboxRuntime.ensureInitialized(context, platformInterfaceClass, platformProxy)
 
                 val newServiceMethod = libboxClass.getMethod(
                     "newService",
@@ -127,7 +129,7 @@ class LibboxBridge(private val context: Context) {
                     platformInterfaceClass
                 )
                 val boxService = newServiceMethod.invoke(null, configJson, platformProxy)
-                    ?: error("Libbox.newService returned null for Sing-box v$SUPPORTED_SING_BOX_VERSION")
+                    ?: error("Libbox.newService returned null for Hiddify Core v$SUPPORTED_HIDDIFY_CORE_VERSION")
 
                 // Register ownership BEFORE invoking native start(). If start() throws after the
                 // native object was created, stopCoreLocked() must still close that exact object
@@ -137,7 +139,7 @@ class LibboxBridge(private val context: Context) {
                 check(LibboxRuntime.markVpnLeaseActive(leaseToken)) {
                     "Unable to promote the current Libbox VPN lease to ACTIVE."
                 }
-                Log.i(TAG, "Sing-box libbox v$SUPPORTED_SING_BOX_VERSION started")
+                Log.i(TAG, "Hiddify Core libbox v$SUPPORTED_HIDDIFY_CORE_VERSION started")
             } catch (t: Throwable) {
                 val tunWasEstablished = activeTunFd?.let { it.fileDescriptor.valid() } == true
                 if (settings.failClosedMode && tunWasEstablished) {
@@ -333,7 +335,7 @@ class LibboxBridge(private val context: Context) {
         runCatching {
             libboxClass.getMethod("newService", String::class.java, platformInterfaceClass)
         }.getOrElse {
-            error("Incompatible libbox.aar: Libbox.newService(String, PlatformInterface) signature mismatch (expected v$SUPPORTED_SING_BOX_VERSION)")
+            error("Incompatible hiddify-core.aar: Libbox.newService(String, PlatformInterface) signature mismatch (expected v$SUPPORTED_HIDDIFY_CORE_VERSION)")
         }
 
         val methods = platformInterfaceClass.methods
@@ -344,7 +346,7 @@ class LibboxBridge(private val context: Context) {
                     (returnType == null || m.returnType == returnType)
             }
             requireNotNull(match) {
-                "Incompatible libbox.aar: PlatformInterface.$name(${paramTypes.joinToString { it.simpleName }}) mismatch for Sing-box v$SUPPORTED_SING_BOX_VERSION"
+                "Incompatible hiddify-core.aar: PlatformInterface.$name(${paramTypes.joinToString { it.simpleName }}) mismatch for Hiddify Core v$SUPPORTED_HIDDIFY_CORE_VERSION"
             }
         }
 
@@ -354,7 +356,7 @@ class LibboxBridge(private val context: Context) {
                     (returnType == null || m.returnType == returnType)
             }
             requireNotNull(match) {
-                "Incompatible libbox.aar: PlatformInterface.$name (arity=$arity) mismatch for Sing-box v$SUPPORTED_SING_BOX_VERSION"
+                "Incompatible hiddify-core.aar: PlatformInterface.$name (arity=$arity) mismatch for Hiddify Core v$SUPPORTED_HIDDIFY_CORE_VERSION"
             }
         }
 
@@ -424,17 +426,17 @@ class LibboxBridge(private val context: Context) {
         "writeLog" -> {
             val msg = args?.firstOrNull() as? String
             if (!msg.isNullOrBlank()) {
-                Log.d(TAG, "[sing-box] ${LogRedactor.redact(msg)}")
+                Log.d(TAG, "[hiddify-core] ${LogRedactor.redact(msg)}")
             }
             null
         }
         "readWIFIState", "localDNSTransport" -> null
         "clearDNSCache", "sendNotification" -> null
-        "toString" -> "VisionPlatformInterface(sing-box $SUPPORTED_SING_BOX_VERSION)"
+        "toString" -> "VisionPlatformInterface(hiddify-core $SUPPORTED_HIDDIFY_CORE_VERSION)"
         "hashCode" -> System.identityHashCode(this)
         "equals" -> false
         else -> throw UnsupportedOperationException(
-            "Unhandled mandatory PlatformInterface method '${method.name}' in Sing-box v$SUPPORTED_SING_BOX_VERSION"
+            "Unhandled mandatory PlatformInterface method '${method.name}' in Hiddify Core v$SUPPORTED_HIDDIFY_CORE_VERSION"
         )
     }
 
@@ -591,7 +593,7 @@ class LibboxBridge(private val context: Context) {
     }
 
     /**
-     * Consumes incoming Sing-box v1.10.7 `TunOptions` (`getMTU`, `getInet4Address`,
+     * Consumes incoming Hiddify Core v5 `TunOptions` (`getMTU`, `getInet4Address`,
      * `getInet6Address`, `getDNSServerAddress`) and applies them to `VpnService.Builder`.
      *
      * Always excludes `context.packageName` (this app's UID, which is also inherited by child

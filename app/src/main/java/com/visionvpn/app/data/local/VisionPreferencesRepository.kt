@@ -42,6 +42,15 @@ enum class StorageMigrationState {
     FAILED
 }
 
+private fun normalizeNumericRange(raw: String, fallback: String, minimum: Int, maximum: Int): String {
+    val value = raw.trim()
+    val match = Regex("^(\\d{1,4})(?:-(\\d{1,4}))?$").matchEntire(value) ?: return fallback
+    val first = match.groupValues[1].toIntOrNull() ?: return fallback
+    val last = match.groupValues[2].takeIf { it.isNotBlank() }?.toIntOrNull() ?: first
+    if (first !in minimum..maximum || last !in minimum..maximum || first > last) return fallback
+    return if (match.groupValues[2].isBlank()) first.toString() else "$first-$last"
+}
+
 private fun normalizeLatencyTestUrl(raw: String): String {
     val normalized = raw.trim()
     val valid = runCatching { URI(normalized) }.getOrNull()?.let { uri ->
@@ -126,9 +135,21 @@ class VisionPreferencesRepository(
                         latencyProbeConcurrency = decoded.latencyProbeConcurrency.coerceIn(1, 100),
                         coreLogLevel = decoded.coreLogLevel.trim().lowercase().takeIf { it in setOf("error", "warn", "info", "debug", "trace") } ?: "info",
                         speedTestDownloadSizeMiB = decoded.speedTestDownloadSizeMiB.coerceIn(1, 100),
-                        smartConnectIntervalSeconds = decoded.smartConnectIntervalSeconds.coerceIn(15, 3600),
-                        smartConnectCandidateCount = decoded.smartConnectCandidateCount.coerceIn(2, 100),
-                        smartConnectToleranceMs = decoded.smartConnectToleranceMs.coerceIn(1, 500),
+                        // Migrate old Smart Connect selections to the Hiddify balancer without losing user choices.
+                        balancerEnabled = decoded.balancerEnabled || decoded.smartConnectEnabled,
+                        balancerProfileIds = (decoded.balancerProfileIds.ifEmpty { decoded.smartConnectProfileIds })
+                            .filter { it.isNotBlank() }.toSet(),
+                        balancerIntervalSeconds = (if (decoded.balancerIntervalSeconds == 60 && decoded.smartConnectIntervalSeconds != 60)
+                            decoded.smartConnectIntervalSeconds else decoded.balancerIntervalSeconds).coerceIn(15, 3600),
+                        balancerCandidateCount = decoded.balancerCandidateCount.coerceIn(2, 100),
+                        tlsFragmentEnabled = decoded.tlsFragmentEnabled && !decoded.tlsPaddingEnabled,
+                        tlsFragmentMethod = decoded.tlsFragmentMethod.takeIf { it in setOf("tlsHello", "range") } ?: "tlsHello",
+                        tlsFragmentRange = normalizeNumericRange(decoded.tlsFragmentRange, "1-3", 1, 5),
+                        tlsFragmentSize = normalizeNumericRange(decoded.tlsFragmentSize, "10-30", 1, 5000),
+                        tlsFragmentSleep = normalizeNumericRange(decoded.tlsFragmentSleep, "2-8", 0, 5000),
+                        tlsMixedSniCase = decoded.tlsMixedSniCase,
+                        tlsPaddingEnabled = decoded.tlsPaddingEnabled && !decoded.tlsFragmentEnabled,
+                        tlsPaddingSize = normalizeNumericRange(decoded.tlsPaddingSize, "800-1200", 1, 5000),
                         mtu = decoded.mtu.coerceIn(1280, 1500)
                     )
                 }
@@ -319,10 +340,19 @@ class VisionPreferencesRepository(
             latencyProbeConcurrency = settings.latencyProbeConcurrency.coerceIn(1, 100),
             coreLogLevel = settings.coreLogLevel.trim().lowercase().takeIf { it in setOf("error", "warn", "info", "debug", "trace") } ?: "info",
             speedTestDownloadSizeMiB = settings.speedTestDownloadSizeMiB.coerceIn(1, 100),
-            smartConnectIntervalSeconds = settings.smartConnectIntervalSeconds.coerceIn(15, 3600),
-            smartConnectCandidateCount = settings.smartConnectCandidateCount.coerceIn(2, 100),
-            smartConnectToleranceMs = settings.smartConnectToleranceMs.coerceIn(1, 500),
-            smartConnectProfileIds = settings.smartConnectProfileIds.filter { it.isNotBlank() }.toSet(),
+            balancerIntervalSeconds = settings.balancerIntervalSeconds.coerceIn(15, 3600),
+            balancerCandidateCount = settings.balancerCandidateCount.coerceIn(2, 100),
+            balancerProfileIds = settings.balancerProfileIds.filter { it.isNotBlank() }.toSet(),
+            tlsFragmentMethod = settings.tlsFragmentMethod.takeIf { it in setOf("tlsHello", "range") } ?: "tlsHello",
+            tlsFragmentRange = normalizeNumericRange(settings.tlsFragmentRange, "1-3", 1, 5),
+            tlsFragmentSize = normalizeNumericRange(settings.tlsFragmentSize, "10-30", 1, 5000),
+            tlsFragmentSleep = normalizeNumericRange(settings.tlsFragmentSleep, "2-8", 0, 5000),
+            tlsPaddingSize = normalizeNumericRange(settings.tlsPaddingSize, "800-1200", 1, 5000),
+            tlsFragmentEnabled = settings.tlsFragmentEnabled && !settings.tlsPaddingEnabled,
+            tlsPaddingEnabled = settings.tlsPaddingEnabled && !settings.tlsFragmentEnabled,
+            // Clear legacy values on write after their one-time migration.
+            smartConnectEnabled = false,
+            smartConnectProfileIds = emptySet(),
             mtu = settings.mtu.coerceIn(1280, 1500)
         )
         context.visionDataStore.edit { prefs ->

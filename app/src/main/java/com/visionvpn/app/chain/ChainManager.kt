@@ -46,7 +46,7 @@ class ChainManager(
 
     /**
      * Starts chained local daemon engines (those whose `UpstreamProxyURL` / `Socks5Proxy`
-     * targets a Sing-box `mixed-upstream-N` loopback inbound) AFTER Sing-box is running.
+     * targets a Sing-box `mixed-upstream-N` loopback inbound) AFTER Hiddify Core is running.
      */
     suspend fun startPostCoreLocalEngines(graph: RoutingGraph): Result<Unit> {
         return startMatchingLocalEngines(graph) { node -> node.upstreamLoopbackPort != null }
