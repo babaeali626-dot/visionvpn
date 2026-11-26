@@ -91,7 +91,9 @@ android {
 
     sourceSets {
         getByName("main") {
-            jniLibs.srcDir(layout.buildDirectory.dir("generated/torAndroidJniLibs"))
+            // AGP 9 rejects Provider values in the legacy SourceSet API.
+            // Keep the generated path as a concrete directory; preBuild below depends on its producer task.
+            jniLibs.srcDir(file("$buildDir/generated/torAndroidJniLibs"))
         }
     }
 
