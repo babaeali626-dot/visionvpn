@@ -24,8 +24,8 @@ val hasCompleteReleaseSigning = !releaseKeystorePath.isNullOrBlank() &&
     !releaseKeyPassword.isNullOrBlank()
 
 // VisionVPN launches libtor.so directly; it does not consume Tor Android's AAR classes.
-// Resolve the AAR as a native-only artifact so its compileSdk 37 metadata does not become
-// an Android compile-classpath requirement for this API 36 / AGP 8.13.2 application.
+// Resolve Tor Android as a native-only artifact because the app invokes libtor.so directly
+// and intentionally does not consume the AAR Java/Kotlin API or Android resources.
 val torAndroidVersion = "0.4.9.17"
 val torAndroidNativeAar by configurations.creating {
     isCanBeConsumed = false
@@ -35,7 +35,7 @@ val torAndroidNativeAar by configurations.creating {
 
 android {
     namespace = "com.visionvpn.app"
-    compileSdk = 36
+    compileSdk = 37
     ndkVersion = "30.0.16248370"
 
     defaultConfig {
@@ -199,8 +199,8 @@ dependencies {
 
 
 // Extract only the Tor daemon's native libraries from the official Guardian Project AAR.
-// Keeping the AAR off the Android compile classpath avoids importing its minCompileSdk=37
-// metadata into this API 35 app. The extracted .so files are still checked in the final APK
+// Keeping the AAR off the Android compile classpath avoids adding unused Java/Kotlin classes.
+// The extracted .so files are still checked in the final APK
 // by scripts/verify_16kb_alignment.py; this is not a relaxation of the 16 KiB gate.
 val extractTorAndroidNativeLibraries by tasks.registering(Copy::class) {
     from({
