@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -98,9 +100,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
 
     buildFeatures {
         compose = true
@@ -118,6 +117,13 @@ android {
         jniLibs {
             useLegacyPackaging = true
         }
+    }
+}
+
+// Kotlin 2.4.x requires the typed compilerOptions DSL; retain JVM 17 bytecode.
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.fromTarget("17")
     }
 }
 
