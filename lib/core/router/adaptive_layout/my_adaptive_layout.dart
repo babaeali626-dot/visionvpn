@@ -75,7 +75,9 @@ class MyAdaptiveLayout extends HookConsumerWidget {
         },
         child: Material(
           child: Scaffold(
-            extendBody: isMobileBreakpoint,
+            // Reserve exact layout height for the floating navigation bar and Android system insets
+            // so scrollable content and bottom controls never overlap or get clipped behind it.
+            extendBody: false,
             body: isMobileBreakpoint
                 ? navigationShell
                 : Row(
@@ -121,7 +123,9 @@ class MyAdaptiveLayout extends HookConsumerWidget {
   }
 
   List<ShellRouteAction> _actions(Translations t, bool showProfilesAction, bool isMobileBreakpoint) => [
-    ShellRouteAction(Icons.home_rounded, t.pages.home.title),
+    isMobileBreakpoint
+        ? const ShellRouteAction(Icons.shield_rounded, 'VPN')
+        : ShellRouteAction(Icons.shield_rounded, t.pages.home.title),
     if (isMobileBreakpoint || showProfilesAction) ShellRouteAction(Icons.layers_rounded, t.pages.profiles.title),
     if (isMobileBreakpoint) const ShellRouteAction(Icons.shield_moon_rounded, 'Tor'),
     ShellRouteAction(Icons.tune_rounded, t.pages.settings.title),
@@ -149,39 +153,42 @@ class _VisionFloatingNavBar extends StatelessWidget {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
 
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
-        child: Container(
-          height: 66,
-          decoration: BoxDecoration(
-            color: isDark ? const Color(0xF0110829) : theme.colorScheme.surface.withValues(alpha: 0.96),
-            borderRadius: BorderRadius.circular(32),
-            border: Border.all(
-              color: isDark ? const Color(0x668B5CF6) : theme.colorScheme.outlineVariant,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: isDark ? const Color(0x557C3AED) : Colors.black.withValues(alpha: 0.12),
-                blurRadius: 20,
-                offset: const Offset(0, 6),
+    return ColoredBox(
+      color: isDark ? const Color(0xFF090518) : theme.colorScheme.surface,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 6, 14, 10),
+          child: Container(
+            height: 64,
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xF5110829) : theme.colorScheme.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(32),
+              border: Border.all(
+                color: isDark ? const Color(0x668B5CF6) : theme.colorScheme.outlineVariant,
               ),
-            ],
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-          child: Row(
-            children: [
-              for (var i = 0; i < actions.length; i++)
-                Expanded(
-                  child: _FloatingNavItem(
-                    action: actions[i],
-                    selected: i == selectedIndex,
-                    isDark: isDark,
-                    onTap: () => onSelected(i),
-                  ),
+              boxShadow: [
+                BoxShadow(
+                  color: isDark ? const Color(0x4D7C3AED) : Colors.black.withValues(alpha: 0.1),
+                  blurRadius: 18,
+                  offset: const Offset(0, 4),
                 ),
-            ],
+              ],
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+            child: Row(
+              children: [
+                for (var i = 0; i < actions.length; i++)
+                  Expanded(
+                    child: _FloatingNavItem(
+                      action: actions[i],
+                      selected: i == selectedIndex,
+                      isDark: isDark,
+                      onTap: () => onSelected(i),
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),

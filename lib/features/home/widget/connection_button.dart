@@ -34,12 +34,6 @@ enum _Look { loading, disconnected, connecting, waiting, noProxies, connected, h
 
 /// One look per status the core reports. The core decides when the tunnel is waiting for a ping
 /// and when it is connected; the button only shows it.
-///
-/// The status reloads after every core start; until the new stream answers,
-/// the last status holds. A failed start comes back as disconnected with the
-/// failure attached.
-///
-/// A hot reload keeps the tunnel up and has a look of its own.
 _Look _lookOf(AsyncValue<ConnectionStatus> status) => switch (status) {
   AsyncError() => _Look.failed,
   AsyncValue(valueOrNull: Disconnected(connectionFailure: _?)) => _Look.failed,
@@ -53,34 +47,46 @@ _Look _lookOf(AsyncValue<ConnectionStatus> status) => switch (status) {
   _ => _Look.loading,
 };
 
+_Look _lookOfTor(TorModeState torState) => switch (torState.phase) {
+  TorVpnPhase.stopped => _Look.disconnected,
+  TorVpnPhase.startingTor || TorVpnPhase.bootstrapping || TorVpnPhase.recovering => _Look.connecting,
+  TorVpnPhase.verifyingSocks || TorVpnPhase.startingVpn || TorVpnPhase.verifyingTunnel => _Look.waiting,
+  TorVpnPhase.connected => torState.vpnActive && torState.tunnelVerified ? _Look.connected : _Look.waiting,
+  TorVpnPhase.stopping => _Look.disconnecting,
+  TorVpnPhase.failClosed || TorVpnPhase.error => _Look.failed,
+};
+
 class ConnectionButton extends HookConsumerWidget {
   const ConnectionButton({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final t = ref.watch(translationsProvider).requireValue;
+    final torState = ref.watch(torModeNotifierProvider);
     final status = ref.watch(connectionNotifierProvider);
-    final look = _held(_lookOf(status));
 
-    // What a tap does follows the core alone, and the core can be stopped whatever it is doing: a
-    // tunnel that is up, a start in progress, and a hot reload all turn off at once, and the core
-    // cancels what it was busy with.
-    final onTap = switch (status) {
-      AsyncData(value: Disconnected()) || AsyncError() => () => _connect(ref),
-      AsyncData(value: Connected() || Waiting() || NoAvailableProxies() || Connecting() || HotReloading()) =>
-        () => ref.read(torModeNotifierProvider).isTorModeSelected
-            ? ref.read(torModeNotifierProvider.notifier).toggleTorVpn()
-            : ref.read(connectionNotifierProvider.notifier).toggleConnection(),
-      _ => null,
-    };
+    final rawLook = torState.isTorModeSelected ? _lookOfTor(torState) : _lookOf(status);
+    final look = _held(rawLook);
 
-    final failure = switch (status) {
-      AsyncError(:final ConnectionFailure error) => error,
-      AsyncValue(valueOrNull: Disconnected(connectionFailure: final failure?)) => failure,
-      _ => null,
-    };
-    // the speeds the button's light follows while connected, and only them: the core's status
-    // comes every second and something in it always changed
+    final onTap = torState.isTorModeSelected
+        ? (torState.phase == TorVpnPhase.stopping
+              ? null
+              : () => ref.read(torModeNotifierProvider.notifier).toggleTorVpn())
+        : switch (status) {
+            AsyncData(value: Disconnected()) || AsyncError() => () => _connect(ref),
+            AsyncData(value: Connected() || Waiting() || NoAvailableProxies() || Connecting() || HotReloading()) =>
+              () => ref.read(connectionNotifierProvider.notifier).toggleConnection(),
+            _ => null,
+          };
+
+    final failure = torState.isTorModeSelected
+        ? null
+        : switch (status) {
+            AsyncError(:final ConnectionFailure error) => error,
+            AsyncValue(valueOrNull: Disconnected(connectionFailure: final failure?)) => failure,
+            _ => null,
+          };
+
     final (download, upload) = ref.watch(
       statsNotifierProvider.select((stats) {
         final s = stats.valueOrNull;
@@ -88,12 +94,28 @@ class ConnectionButton extends HookConsumerWidget {
       }),
     );
 
-    // Connected means some server answers; the user's pick or the chain hop can still be down.
-    final health = ref.watch(connectionHealthProvider);
+    final health = torState.isTorModeSelected ? null : ref.watch(connectionHealthProvider);
     final h = t.connection.health;
     final chainName = health?.chain?.present(t) ?? '';
-    final degraded = look == _Look.connected && (health?.degraded ?? false);
-    final hopPending = look == _Look.connected && (health?.hopPending ?? false);
+    final degraded = !torState.isTorModeSelected && look == _Look.connected && (health?.degraded ?? false);
+    final hopPending = !torState.isTorModeSelected && look == _Look.connected && (health?.hopPending ?? false);
+
+    final String label = torState.isTorModeSelected
+        ? _torLabel(torState, t)
+        : switch (look) {
+            _Look.loading => "",
+            _Look.disconnected => t.connection.tapToConnect,
+            _Look.connecting => t.connection.connecting,
+            _Look.waiting => t.connection.waiting,
+            _Look.noProxies => t.connection.noAvailableProxies,
+            _Look.connected when degraded =>
+              health!.pick == HealthState.failed ? h.pickDead : h.hopFailed(chain: chainName),
+            _Look.connected when hopPending => h.hopPending(chain: chainName),
+            _Look.connected => t.connection.connected,
+            _Look.hotReloading => t.connection.hotReloading,
+            _Look.disconnecting => t.connection.disconnecting,
+            _Look.failed => t.connection.failed,
+          };
 
     const buttonTheme = ConnectionButtonTheme.light;
     final today = DateTime.now();
@@ -106,38 +128,21 @@ class ConnectionButton extends HookConsumerWidget {
       errorDetailsLabel: t.connection.errorDetails,
       download: download,
       upload: upload,
-      label: switch (look) {
-        _Look.loading => "",
-        _Look.disconnected => t.connection.tapToConnect,
-        _Look.connecting => t.connection.connecting,
-        _Look.waiting => t.connection.waiting,
-        _Look.noProxies => t.connection.noAvailableProxies,
-        // connected says the traffic gets through; when it does not, say what stops it
-        _Look.connected when degraded =>
-          health!.pick == HealthState.failed ? h.pickDead : h.hopFailed(chain: chainName),
-        _Look.connected when hopPending => h.hopPending(chain: chainName),
-        _Look.connected => t.connection.connected,
-        _Look.hotReloading => t.connection.hotReloading,
-        _Look.disconnecting => t.connection.disconnecting,
-        _Look.failed => t.connection.failed,
-      },
+      label: label,
       hint: look == _Look.failed ? t.connection.tapToRetry : null,
       searching: hopPending,
-      // the chain hop, while the core runs with the chain on
-      hop: {_Look.connected, _Look.noProxies, _Look.waiting}.contains(look)
+      hop: !torState.isTorModeSelected && {_Look.connected, _Look.noProxies, _Look.waiting}.contains(look)
           ? ref.watch(activeProxyCardProvider.select((card) => card?.hopStatus == null ? null : card))
           : null,
       onHop: ref.read(bottomSheetsNotifierProvider.notifier).showConnectionHealth,
       hopLabel: health == null ? '' : '$chainName: ${_hopLabel(h, health)}',
       buttonColor: switch (look) {
         _Look.connected when degraded => _degradedColor,
-        // the traffic waits for the chain hop: still on its way
-        _Look.connected when hopPending => const Color(0xFF455FE9),
-        _Look.connected => buttonTheme.connectedColor!,
+        _Look.connected when hopPending => const Color(0xFF7C3AED),
+        _Look.connected => const Color(0xFF14B8A6),
         _Look.noProxies => const Color.fromARGB(255, 185, 176, 103),
         _Look.failed => Colors.red,
-        // the logo's own blue while the connection is on its way
-        _Look.connecting || _Look.waiting || _Look.hotReloading || _Look.disconnecting => const Color(0xFF455FE9),
+        _Look.connecting || _Look.waiting || _Look.hotReloading || _Look.disconnecting => const Color(0xFF7C3AED),
         _ => buttonTheme.idleColor!,
       },
       image: switch (look) {
@@ -145,23 +150,25 @@ class ConnectionButton extends HookConsumerWidget {
         _ => Assets.images.disconnectNorouz,
       },
       useImage: today.day >= 19 && today.day <= 23 && today.month == 3,
-      // reduce animations stills only the light flowing round the button while connected; the
-      // radar, the connecting and disconnecting waves keep moving. The system's reduce motion
-      // stills the whole button.
       reduceFlow: ref.watch(Preferences.reduceAnimations),
     );
     return button;
   }
 
-  /// Coming back from the background, the app sets the core up again, and for a moment the status
-  /// can read as not connected though the tunnel never went down. So leaving connected for
-  /// [_Look.loading] waits [_hold] before it shows, and nothing changes if
-  /// connected is back by then.
-  ///
-  /// Intentional disconnect must not keep the Connected label: it goes through
-  /// [_Look.disconnecting], and a bare Connected→Disconnected jump (no Stopping event) must
-  /// also clear immediately — holding disconnected made disconnect feel multi-second slow.
-  /// A failure is failed, so it still shows at once.
+  static String _torLabel(TorModeState torState, Translations t) => switch (torState.phase) {
+    TorVpnPhase.stopped => t.connection.tapToConnect,
+    TorVpnPhase.startingTor => 'Starting Tor...',
+    TorVpnPhase.bootstrapping => 'Tor Bootstrap ${torState.snapshot.bootstrap}%...',
+    TorVpnPhase.verifyingSocks => 'Verifying Tor SOCKS5...',
+    TorVpnPhase.startingVpn => 'Starting Tor VPN...',
+    TorVpnPhase.verifyingTunnel => 'Verifying Tor Tunnel...',
+    TorVpnPhase.connected => torState.vpnActive && torState.tunnelVerified ? t.connection.connected : 'Verifying Tor Tunnel...',
+    TorVpnPhase.recovering => 'Recovering Tor...',
+    TorVpnPhase.stopping => t.connection.disconnecting,
+    TorVpnPhase.failClosed => 'Fail-Closed Active',
+    TorVpnPhase.error => t.connection.failed,
+  };
+
   _Look _held(_Look look) {
     final shown = useRef(look);
     final until = useRef<DateTime?>(null);
@@ -180,7 +187,6 @@ class ConnectionButton extends HookConsumerWidget {
       until.value = null;
     }
     shown.value = result;
-    // shows the new look once the hold is over, if nothing else rebuilds the button first
     useEffect(() {
       final end = until.value;
       if (end == null) return null;
@@ -243,52 +249,27 @@ class _ConnectionButton extends HookWidget {
 
   final _Look look;
   final VoidCallback? onTap;
-
-  /// Shows what went wrong; null when nothing did.
   final VoidCallback? onErrorDetails;
   final String errorDetailsLabel;
-
-  /// Bytes a second.
   final int download;
   final int upload;
   final String label;
   final String? hint;
-
-  /// Connected, but the traffic still waits for the chain hop: the radar keeps searching.
   final bool searching;
-
-  /// The chain hop as a badge on the button; null with the chain off.
   final ActiveProxyCardData? hop;
-
-  /// Opens the connection check.
   final VoidCallback onHop;
-
-  /// What the badge says to a screen reader and in its tooltip: the chain and its state.
   final String hopLabel;
   final Color buttonColor;
   final AssetGenImage image;
   final bool useImage;
-
-  /// Reduce animations: while connected, the light round the button stands still, as it was when
-  /// it stopped, and only steps with the traffic; the logo stops breathing once it has settled.
-  /// The other looks keep their motion.
   final bool reduceFlow;
 
   static const _size = 148.0;
-
-  /// Room round the button for its light.
   static const _glow = 110.0;
-
-  /// The button and its light take most of a short screen (a TV, a phone held sideways, a small
-  /// window): full size from [_fullFrom] logical pixels of height, shrinking evenly to
-  /// [_smallest] at [_smallFrom] and below.
   static const _fullFrom = 860.0;
   static const _smallFrom = 640.0;
   static const _smallest = .65;
 
-  /// Seconds after a look begins until its own motion is over: the connected look's spring and
-  /// ripple, the error's shake. What follows only drifts. A button that waits for a tap has only
-  /// its colour to ease into, and nothing moves in it after.
   static double _settleAfter(EclipseLook look) => look == EclipseLook.idle ? 1 : 3;
 
   static EclipseTraffic _stepped(EclipseTraffic t) =>
@@ -314,10 +295,8 @@ class _ConnectionButton extends HookWidget {
     final scale = _scaleFor(MediaQuery.sizeOf(context).height);
     final clock = useMemoized(() => Stopwatch()..start());
     double now() => clock.elapsedMicroseconds / 1e6;
-    // keyboard / TV remote focus: a ring round the button, so the face and its logo stay visible
     final focused = useState(false);
 
-    // when the look last changed, and from what
     final eclipseLook = _eclipseLook;
     final change = useRef((
       look: eclipseLook,
@@ -327,14 +306,11 @@ class _ConnectionButton extends HookWidget {
       previousColor: buttonColor,
     ));
     final previousLook = usePrevious(look);
-    // when the button last stopped showing connected
     final leftConnected = useRef(-10.0);
     if (change.value.look != eclipseLook || change.value.color != buttonColor) {
       final last = change.value;
       if (last.look == EclipseLook.connected && eclipseLook != EclipseLook.connected) leftConnected.value = now();
       final eased = Color.lerp(last.previousColor, last.color, ((now() - last.at) / .45).clamp(0.0, 1.0))!;
-      // the app opening on a tunnel that is already up, or connected coming back
-      // after a moment away, skips the connect animation instead of replaying it
       final skip =
           previousLook == _Look.loading || (eclipseLook == EclipseLook.connected && now() - leftConnected.value < 2);
       change.value = (
@@ -346,57 +322,27 @@ class _ConnectionButton extends HookWidget {
       );
     }
 
-    // the speeds arrive once a second; the light follows them smoothly
     final target = EclipseTraffic(down: EclipseTraffic.level(download), up: EclipseTraffic.level(upload));
     final light = useMemoized(_LightMotion.new);
 
-    // A timer, the AmbientClock's (not useSingleTickerProvider): that hook only allows one createTicker
-    // for the State's life, so look/still changes crashed after disconnect→connect.
-    // A timer does not stop with its tickers, so it stops itself while the button cannot be
-    // seen: under another tab, sheet or route, or with the app not visible. TickerMode says
-    // both; App turns it off for the whole app when the app is not visible.
-    // both hooks run on every build: `a && b` would skip the second while TickerMode is off and
-    // shift every hook after it, so returning to home threw and showed a grey box
     final tickerOn = useValueListenable(TickerMode.getNotifier(context));
-    // a new look wakes the endless decoration round the button, the chain badge's shine: the chain
-    // hop coming up after a long wait changes the look but not the connection. The wake comes
-    // after the frame, since it rebuilds everything else that moves
     useEffect(() {
       WidgetsBinding.instance.addPostFrameCallback((_) => wakeAmbientMotion());
       return null;
     }, [eclipseLook]);
-    // The light moves for as long as the endless decoration may run at all, not only for the
-    // while it runs after a change: a light that froze where it was, and then jumped with the
-    // traffic once a second, looked as if the app had hung.
     final allowed = useValueListenable(ambientMotionAllowed);
-    // connecting, searching and disconnecting say the app is busy: they keep moving for as long as
-    // they last, also where the endless decoration may not run. A wave that froze half way looked
-    // stuck until the core gave up or connected
     final busy = const {EclipseLook.starting, EclipseLook.waiting, EclipseLook.stopping}.contains(eclipseLook);
     final ambient = busy || allowed;
     final ticking = tickerOn && ambient;
-    // with reduce animations, and where the endless motion may not run (the window without focus,
-    // a low battery), the light stands still, as it was, and only steps with the traffic
     final still = reduced || !ambient;
-    // reduce animations: connected shows the still light, after its own connect motion has played
     final flowStill = reduceFlow && eclipseLook == EclipseLook.connected;
-    // Once a look has settled, the light and the breathing move slowly enough for 20 fps; the
-    // changes between looks keep 30. What a frame costs is mostly the frame itself, the whole
-    // window drawn again, so this is a third less of it for as long as the app stays connected.
-    // Where the device cannot afford that many frames, the clock steps less often for both.
     final settled = useValueNotifier(false);
-    // settled belongs to the look before until the next tick: a new look is never calm, or going
-    // from a long wait to connected stopped the clock on the connect motion's first frame
     final calm = useValueListenable(settled) && now() - change.value.at > _settleAfter(eclipseLook);
     final interval = calm ? AmbientClock.decoration : AmbientClock.lively;
-    // still, nothing ticks; nor once connected has settled with the flowing light reduced, nor in
-    // a button that waits for a tap
     final moving = !still && ticking && !(flowStill && calm) && !(eclipseLook == EclipseLook.idle && calm);
-    // counts the frames asked for: all it says is that the button is to be drawn again
     final frame = useValueNotifier(0);
     useEffect(() {
       if (!moving) return null;
-      // on the clock every endless decoration shares, so they all draw in the same frames
       return AmbientClock.subscribe(interval, () {
         final c = change.value;
         settled.value = now() - c.at > _settleAfter(c.look);
@@ -412,7 +358,6 @@ class _ConnectionButton extends HookWidget {
           enabled: onTap != null,
           label: label,
           hint: hint,
-          // drawn at full size, then scaled as a whole (light and badges too) to fit short screens
           child: SizedBox.square(
             dimension: _size * scale,
             child: OverflowBox(
@@ -439,10 +384,6 @@ class _ConnectionButton extends HookWidget {
                               valueListenable: frame,
                               builder: (context, _, _) {
                                 final c = change.value;
-                                // What the frame shows is worked out here, for the moment it is
-                                // drawn at, not for the moment the timer asked for it: the two
-                                // are up to a screen refresh apart, by a different part of one
-                                // each time, and the motion went on unevenly.
                                 final at = now();
                                 if (moving) {
                                   light.advance(at, target, flowing: c.look != EclipseLook.idle || at - c.at <= 1);
@@ -451,7 +392,6 @@ class _ConnectionButton extends HookWidget {
                                 }
                                 return CustomPaint(
                                   isComplex: true,
-                                  // a light that stands still is kept as it was drawn
                                   willChange: moving,
                                   painter: EclipseButtonPainter(
                                     frame: EclipseFrame(
@@ -463,7 +403,6 @@ class _ConnectionButton extends HookWidget {
                                       previousColor: c.previousColor,
                                     ),
                                     radius: _size / 2,
-                                    // in steps, so it repaints only when the traffic changes a lot
                                     traffic: still || flowStill ? _stepped(target) : light.traffic,
                                     dark: theme.brightness == Brightness.dark,
                                     drawLogo: !useImage,
@@ -477,7 +416,6 @@ class _ConnectionButton extends HookWidget {
                           ),
                         ),
                       ),
-                      // the ink only tints the face a little: a solid hover or focus color would hide the logo
                       Material(
                         key: const ValueKey("home_connection_button"),
                         shape: const CircleBorder(),
@@ -510,7 +448,6 @@ class _ConnectionButton extends HookWidget {
                           ),
                         ),
                       ),
-                      // the error badge opens what went wrong
                       if (look == _Look.failed && onErrorDetails != null)
                         Positioned.fromRect(
                           rect: EclipseButtonPainter.errorBadgeRect(
@@ -523,7 +460,6 @@ class _ConnectionButton extends HookWidget {
                             child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: onErrorDetails),
                           ),
                         ),
-                      // the chain hop sits on the rim at the top left, half on the button
                       if (hop case final hop?)
                         Positioned.fromRect(
                           rect: Rect.fromCircle(
@@ -540,7 +476,7 @@ class _ConnectionButton extends HookWidget {
             ),
           ),
         ),
-        Gap(24 * scale),
+        Gap(20 * scale),
         Column(
           children: [
             AnimatedText(label, style: theme.textTheme.titleMedium),
@@ -562,41 +498,23 @@ class _ConnectionButton extends HookWidget {
   }
 }
 
-/// The light's own clock and the traffic it shows, which go on only while the light moves.
 class _LightMotion {
-  /// Seconds the light has moved. A light that stops stays as it was, the same rays and flares
-  /// where they were, and goes on from there when it moves again; on the wall clock it would jump
-  /// to another sky each time.
   double time = 0;
-
-  /// What the light shows of the traffic. The speeds arrive once a second, and it follows them
-  /// smoothly.
   EclipseTraffic traffic = const EclipseTraffic();
-
-  /// When it last went on, on the button's clock; null while it stands still.
   double? _last;
 
-  /// Brings both up to [now], following [target]. The clock runs on only while the light is
-  /// [flowing].
   void advance(double now, EclipseTraffic target, {required bool flowing}) {
     final passed = now - (_last ?? now);
     _last = now;
     if (passed <= 0) return;
-    // the light rises with the traffic in about a second, and fades more slowly, so the stats
-    // reloading for a moment (coming back from the background) barely dims it
     double follow(double from, double to) => from + (to - from) * (1 - math.exp(-passed / (to > from ? .8 : 2.5)));
     traffic = EclipseTraffic(down: follow(traffic.down, target.down), up: follow(traffic.up, target.up));
     if (flowing) time += passed;
   }
 
-  /// Stands still from here on, until the next [advance].
   void pause() => _last = null;
 }
 
-/// The chain hop on the button: its glyph alone, outlined in the button's face color so it reads
-/// on the button and on the page. Filled with a check once up, an outline that breathes while it
-/// connects, red with a cross when it fails, grey while it waits for the selected proxy. Opens the
-/// connection check.
 class _ChainBadge extends StatelessWidget {
   const _ChainBadge(this.card, {required this.label, required this.onTap});
   final ActiveProxyCardData card;
@@ -611,16 +529,12 @@ class _ChainBadge extends StatelessWidget {
     (ChainType.extraSecurity, StepStatus.connected) => Icons.gpp_good_rounded,
     (ChainType.extraSecurity, StepStatus.failed) => Icons.gpp_bad_rounded,
     (ChainType.extraSecurity, _) => Icons.shield_outlined,
-    // a door, not a lock: the unblocker gets the proxy through, it does not secure it. Drawn by
-    // PassingDoor; these only tell its running state from its shut one, to switch between them
     (ChainType.unblocker, StepStatus.connected || StepStatus.connecting || StepStatus.slow) =>
       Icons.meeting_room_rounded,
     (ChainType.unblocker, _) => Icons.door_front_door_rounded,
   };
 
   Widget _glyphWidget(StepStatus status) => switch ((_type, status)) {
-    // the traffic keeps getting through on its way and once up, as on the proxy card; still, the
-    // door open and the dots lined up, while it waits or fails
     (ChainType.unblocker, _) => PassingDoor(
       size: _glyphSize,
       color: Colors.white,
@@ -629,8 +543,6 @@ class _ChainBadge extends StatelessWidget {
     _ => Icon(_glyph, size: _glyphSize, color: Colors.white),
   };
 
-  /// The solid shape under the glyph: the white seal that strokes it and fills its cut-outs. The
-  /// door sits on a disc, smaller to stay inside it.
   IconData get _seal => _type == ChainType.extraSecurity ? Icons.shield_rounded : Icons.circle;
   double get _glyphSize => _type == ChainType.extraSecurity ? 40 : 30;
 
@@ -639,7 +551,6 @@ class _ChainBadge extends StatelessWidget {
     final theme = Theme.of(context);
     final status = card.hopStatus!;
     final (main, accent) = _type.colors(card.hopMode);
-    // a gradient in the chain's own colors; red when it fails, grey while it waits
     final (from, to) = switch (status) {
       StepStatus.failed => (const Color(0xFFFF6B6B), theme.colorScheme.error),
       StepStatus.waiting => (theme.colorScheme.outline, theme.colorScheme.outlineVariant),
@@ -651,8 +562,6 @@ class _ChainBadge extends StatelessWidget {
       child: Stack(
         alignment: Alignment.center,
         children: [
-          // the seal: a little larger than the glyph, so it reads as a white stroke, with a soft
-          // glow in the state's color
           Icon(
             _seal,
             size: 50,
@@ -674,14 +583,9 @@ class _ChainBadge extends StatelessWidget {
         ],
       ),
     );
-    // the loops build from a copy: `glyph` itself becomes the result, and a builder that read it
-    // would build itself over and over
     final plain = glyph;
     glyph = switch (status) {
       _ when MediaQuery.disableAnimationsOf(context) => plain,
-      // the loops below never end: they run on the ambient clock, with the button's light, and stop
-      // with it
-      // once up, a light sweeps across it now and then
       StepStatus.connected => AmbientLoop(
         period: 3700.ms,
         still: (_) => plain,
@@ -689,20 +593,17 @@ class _ChainBadge extends StatelessWidget {
             .animate(adapter: ValueNotifierAdapter(phase))
             .shimmer(delay: 2500.ms, duration: 1200.ms, color: Colors.white.withValues(alpha: .7)),
       ),
-      // on its way: the door opening says so; the shield breathes
       StepStatus.connecting || StepStatus.slow when _type == ChainType.unblocker => plain,
       StepStatus.connecting || StepStatus.slow => AmbientLoop(
         period: 1800.ms,
         still: (_) => plain,
         builder: (context, phase) => ValueListenableBuilder<double>(
           valueListenable: phase,
-          // in and out again, 0.9 s each way
           builder: (context, v, child) =>
               Transform.scale(scale: .92 + .12 * Curves.easeInOut.transform(1 - (2 * v - 1).abs()), child: child),
           child: plain,
         ),
       ),
-      // failed: one short shake to catch the eye
       StepStatus.failed => plain.animate().shake(hz: 4, rotation: .06, duration: 500.ms),
       StepStatus.waiting => plain,
     };
@@ -714,7 +615,6 @@ class _ChainBadge extends StatelessWidget {
         child: GestureDetector(
           onTap: onTap,
           behavior: HitTestBehavior.opaque,
-          // its shimmer and breathing repaint the badge alone, not the button and the page
           child: RepaintBoundary(
             child: Center(
               child: AnimatedSwitcher(

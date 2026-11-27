@@ -193,16 +193,12 @@ void _paintLook(_Ctx x) {
 void _barsWave(_Ctx x, {bool backwards = false}) {
   if (!x.p.drawLogo) return;
   final color = _alpha(x.col, x.p.logoOpacity);
-  double rank(int part) => backwards ? _HiLogo.rank.last - _HiLogo.rank[part] : _HiLogo.rank[part];
-  final shade = [for (var i = 0; i < 4; i++) _alpha(color, .4 + .6 * _bump((x.f.time - rank(i) * .3) % 1.6))];
+  double rank(int part) => backwards ? _VisionEyeLogo.rank.last - _VisionEyeLogo.rank[part] : _VisionEyeLogo.rank[part];
+  final shade = [for (var i = 0; i < 3; i++) _alpha(color, .38 + .62 * _bump((x.f.time - rank(i) * .32) % 1.6))];
   x.logoSpace((c) {
-    // the H stays one piece: its crossbar fades from the short bar's shade into the tall bar's
-    c.drawPath(
-      _HiLogo.h,
-      Paint()..shader = ui.Gradient.linear(const Offset(16.84, 0), const Offset(23.58, 0), [shade[0], shade[1]]),
-    );
-    c.drawPath(_HiLogo.stem, Paint()..color = shade[2]);
-    c.drawPath(_HiLogo.dot, Paint()..color = shade[3]);
+    c.drawPath(_VisionEyeLogo.outerEye, Paint()..color = shade[0]);
+    c.drawPath(_VisionEyeLogo.irisRing, Paint()..color = shade[1]);
+    c.drawPath(_VisionEyeLogo.pupil, Paint()..color = shade[2]);
   });
 }
 
@@ -229,7 +225,7 @@ void _radar(_Ctx x) {
     );
   }
   // the logo keeps the button's white under it, so a faded bar doesn't show the radar through it
-  if (x.p.drawLogo) x.logoSpace((c) => c.drawPath(_HiLogo.all, Paint()..color = Colors.white));
+  if (x.p.drawLogo) x.logoSpace((c) => c.drawPath(_VisionEyeLogo.all, Paint()..color = Colors.white));
 }
 
 /// The signal steps down to weak, then keeps searching, and the error badge breathes, sending out a
@@ -243,7 +239,7 @@ void _error(_Ctx x) {
     ghost: _alpha(x.col, .16),
     dx: _shake(s),
     parts: _each((i) {
-      final bar = _HiLogo.bar[i];
+      final bar = _VisionEyeLogo.bar[i];
       final drop = _easeOut((s - (2 - bar) * .1) / .55);
       final waver = .06 * math.sin(x.f.time * 2.3 + bar * 1.7) * settled;
       final fade = bar == 2 ? 1 - .4 * _osc(x.f.time, 2.2) * settled : 1.0;
@@ -298,7 +294,6 @@ void _connected(_Ctx x) {
       _Part(scaleY: h[0] * breathe(0)),
       _Part(scaleY: h[1] * breathe(1)),
       _Part(scaleY: stem),
-      _Part(dy: (1 - stem) * 35.2 - 1.2 * motion * _osc(x.f.time, 2.6)),
     ],
   );
   x.star(x.toPx(const Offset(67, -2)), 6 * _bump((s - .5) / .9));
@@ -1024,126 +1019,84 @@ class _Ctx {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The Hi logo, from assets/images/logo.svg, in its 64 × 64 units, in four parts: the short bar with
-// the crossbar, the tall bar, the stem and the dot
+// The Vision VPN Eye emblem, in 64 x 64 units, in three concentric parts:
+// outer eye contour, iris ring, and pupil with highlight cutout.
 
-Path _svgPath(String d) {
-  final path = Path();
-  final tokens = RegExp(r'[MCLVHZ]|-?\d*\.?\d+').allMatches(d).map((m) => m.group(0)!).toList();
-  var i = 0;
-  var cmd = '';
-  var x = 0.0;
-  var y = 0.0;
-  double n() => double.parse(tokens[i++]);
-  while (i < tokens.length) {
-    if (RegExp('[A-Z]').hasMatch(tokens[i])) cmd = tokens[i++];
-    switch (cmd) {
-      case 'M':
-        x = n();
-        y = n();
-        path.moveTo(x, y);
-        cmd = 'L';
-      case 'L':
-        x = n();
-        y = n();
-        path.lineTo(x, y);
-      case 'H':
-        x = n();
-        path.lineTo(x, y);
-      case 'V':
-        y = n();
-        path.lineTo(x, y);
-      case 'C':
-        final x1 = n();
-        final y1 = n();
-        final x2 = n();
-        final y2 = n();
-        x = n();
-        y = n();
-        path.cubicTo(x1, y1, x2, y2, x, y);
-      case 'Z':
-        path.close();
-    }
-  }
-  return path;
-}
+abstract final class _VisionEyeLogo {
+  static final outerEye = Path()
+    ..fillType = PathFillType.evenOdd
+    ..moveTo(2, 32)
+    ..cubicTo(10, 14, 22, 10, 32, 10)
+    ..cubicTo(42, 10, 54, 14, 62, 32)
+    ..cubicTo(54, 50, 42, 54, 32, 54)
+    ..cubicTo(22, 54, 10, 50, 2, 32)
+    ..close()
+    ..moveTo(10.5, 32)
+    ..cubicTo(16.5, 19.5, 24.5, 16.5, 32, 16.5)
+    ..cubicTo(39.5, 16.5, 47.5, 19.5, 53.5, 32)
+    ..cubicTo(47.5, 44.5, 39.5, 47.5, 32, 47.5)
+    ..cubicTo(24.5, 47.5, 16.5, 44.5, 10.5, 32)
+    ..close();
 
-abstract final class _HiLogo {
-  static final dot = _svgPath(
-    'M47.1582 14.4283C47.1582 13.8368 47.4684 13.2886 47.9757 12.9842L61.4494 4.89891C62.5721 4.22529 64.0003 '
-    '5.03389 64.0003 6.34306V20.2103C64.0003 21.1405 63.2461 21.8945 62.3161 21.8945H48.8424C47.9124 21.8945 '
-    '47.1582 21.1405 47.1582 20.2103V14.4283Z',
+  static final irisRing = Path()
+    ..fillType = PathFillType.evenOdd
+    ..addOval(Rect.fromCircle(center: const Offset(32, 32), radius: 12.5))
+    ..addOval(Rect.fromCircle(center: const Offset(32, 32), radius: 8.2));
+
+  static final pupil = Path()
+    ..fillType = PathFillType.evenOdd
+    ..addOval(Rect.fromCircle(center: const Offset(32, 32), radius: 5.2))
+    ..addOval(Rect.fromCircle(center: const Offset(34.4, 29.6), radius: 1.6));
+
+  static final all = Path.combine(
+    PathOperation.union,
+    Path.combine(PathOperation.union, outerEye, irisRing),
+    pupil,
   );
 
-  static final h = _svgPath(
-    'M24.3966 26.4593C23.8893 26.7637 23.5789 27.3118 23.5789 27.9034V43.7921L23.5789 45.4751L23.5789 45.4763L23.5789 '
-    '48.0001C23.5789 48.9301 22.8249 49.6001 21.8947 49.6001H18.5263C17.5962 49.6001 16.8421 48.9301 16.8421 48.0001V '
-    '45.4751V34.976C16.8421 33.6669 15.4139 32.8583 14.2913 33.5319L0.817607 41.6171C0.310362 41.9216 0 42.4696 0 '
-    '43.0615V60.6342C0 61.5642 0.754048 62.3184 1.68421 62.3184H15.1579C16.0881 62.3184 16.8421 61.5642 16.8421 '
-    '60.6342V58.9488V56.8314C16.8421 55.9011 17.5962 55.3376 18.5263 55.3376H21.8947C22.8249 55.3376 23.5789 55.9011 '
-    '23.5789 56.8314V58.9488L23.5789 60.6342C23.5789 61.5642 24.333 62.3184 25.2632 62.3184H38.7368C39.6669 62.3184 '
-    '40.4211 61.5642 40.4211 60.6342V45.4763V43.7921V19.8182C40.4211 18.509 38.9928 17.7004 37.8701 18.374L24.3966 '
-    '26.4593Z',
-  )..fillType = PathFillType.evenOdd;
-
-  static final stem = _svgPath(
-    'M47.1592 28.7999V60.7999C47.1592 61.6836 47.9132 62.3999 48.8434 62.3999H62.3171C63.2472 62.3999 64.0013 61.6836 '
-    '64.0013 60.7999V28.7999C64.0013 27.9162 63.2472 27.1999 62.3171 27.1999H48.8434C47.9132 27.1999 47.1592 27.9162 '
-    '47.1592 28.7999Z',
-  );
-
-  static final all = Path.combine(PathOperation.union, Path.combine(PathOperation.union, h, stem), dot);
-
-  static Path pathOf(int part) => part < 2 ? h : (part == 2 ? stem : dot);
-
-  static Rect clipOf(int part) => switch (part) {
-    0 => const Rect.fromLTRB(-2, -2, 23.58, 66),
-    1 => const Rect.fromLTRB(23.58, -2, 42, 66),
-    _ => const Rect.fromLTRB(-2, -2, 66, 66),
+  static Path pathOf(int part) => switch (part) {
+    0 => outerEye,
+    1 => irisRing,
+    _ => pupil,
   };
 
-  static const tops = [32.9, 18.2, 27.2, 4.2];
-  static const bottoms = [62.32, 62.32, 62.4, 21.9];
-  static const centersX = [8.4, 32.0, 55.6, 55.6];
+  static const tops = [10.0, 19.5, 26.8];
+  static const bottoms = [54.0, 44.5, 37.2];
+  static const centersX = [32.0, 32.0, 32.0];
+  static const centersY = [32.0, 32.0, 32.0];
 
-  /// The signal bar each part belongs to: the stem and the dot are the third.
-  static const bar = [0, 1, 2, 2];
-
-  /// The order the parts light up in: the dot just after the stem.
-  static const rank = [0.0, 1.0, 2.0, 2.6];
+  static const bar = [0, 1, 2];
+  static const rank = [0.0, 1.0, 2.0];
 }
 
 /// How one part of the logo looks.
 class _Part {
   const _Part({this.fill = 1, this.opacity = 1, this.dy = 0, this.scaleY = 1});
 
-  /// How much of the part is coloured, from the bottom up.
   final double fill;
   final double opacity;
   final double dy;
   final double scaleY;
 }
 
-List<_Part> _each(_Part Function(int part) style) => [for (var i = 0; i < 4; i++) style(i)];
+List<_Part> _each(_Part Function(int part) style) => [for (var i = 0; i < 3; i++) style(i)];
 
 void _paintLogo(Canvas c, Rect r, {required Color color, List<_Part>? parts, Color? ghost}) {
   c.save();
   c.translate(r.left, r.top);
   c.scale(r.width / 64);
-  for (var i = 0; i < 4; i++) {
+  for (var i = 0; i < 3; i++) {
     final s = parts?[i] ?? const _Part();
-    final top = _HiLogo.tops[i];
-    final bottom = _HiLogo.bottoms[i];
+    final top = _VisionEyeLogo.tops[i];
+    final bottom = _VisionEyeLogo.bottoms[i];
     c.save();
     c.translate(0, s.dy);
     if (s.scaleY != 1) {
-      c.translate(_HiLogo.centersX[i], bottom);
+      c.translate(_VisionEyeLogo.centersX[i], _VisionEyeLogo.centersY[i]);
       c.scale(1, s.scaleY);
-      c.translate(-_HiLogo.centersX[i], -bottom);
+      c.translate(-_VisionEyeLogo.centersX[i], -_VisionEyeLogo.centersY[i]);
     }
-    // not antialiased, so the two halves of the H meet without a seam
-    c.clipRect(_HiLogo.clipOf(i), doAntiAlias: false);
-    final path = _HiLogo.pathOf(i);
+    final path = _VisionEyeLogo.pathOf(i);
     if (ghost != null) c.drawPath(path, Paint()..color = ghost);
     if (s.fill > 0 && s.opacity > 0) {
       if (s.fill < 1) c.clipRect(Rect.fromLTRB(-2, bottom - s.fill * (bottom - top), 66, 66));

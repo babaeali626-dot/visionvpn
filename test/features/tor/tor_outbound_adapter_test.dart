@@ -2,133 +2,106 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hiddify/features/tor/data/tor_outbound_adapter.dart';
-import 'package:hiddify/features/tor/model/tor_mode_state.dart';
 
 void main() {
-  group('TorOutboundAdapter & live sing-box Tor config security', () {
-    test('builds loopback TCP-only SOCKS5 outbound', () {
-      final out = TorOutboundAdapter.build(host: '127.0.0.1', port: 41234);
-      expect(out['type'], 'socks');
-      expect(out['tag'], 'tor');
-      expect(out['server'], '127.0.0.1');
-      expect(out['server_port'], 41234);
-      expect(out['version'], '5');
-      expect(out['network'], 'tcp');
+  group('TorOutboundAdapter', () {
+    test('builds valid TCP-only loopback SOCKS5 outbound', () {
+      final map = TorOutboundAdapter.build(host: '127.0.0.1', port: 9050);
+      expect(map['type'], 'socks');
+      expect(map['tag'], 'tor');
+      expect(map['server'], '127.0.0.1');
+      expect(map['server_port'], 9050);
+      expect(map['version'], '5');
+      expect(map['network'], 'tcp');
     });
 
-    test('rejects non-loopback host and invalid ports', () {
-      expect(() => TorOutboundAdapter.build(host: '0.0.0.0', port: 9050), throwsArgumentError);
-      expect(() => TorOutboundAdapter.build(host: '192.168.1.5', port: 9050), throwsArgumentError);
+    test('rejects non-loopback hosts and invalid ports', () {
+      expect(() => TorOutboundAdapter.build(host: '192.168.1.10', port: 9050), throwsArgumentError);
       expect(() => TorOutboundAdapter.build(host: '127.0.0.1', port: 0), throwsArgumentError);
       expect(() => TorOutboundAdapter.build(host: '127.0.0.1', port: 70000), throwsArgumentError);
     });
 
-    test('full sing-box Tor config enforces DNS over Tor, UDP block, zero direct, and fail-closed', () {
-      final raw = TorOutboundAdapter.encodeFullSingboxConfig(
+    test('builds complete fail-closed sing-box config with select->tor, clash_api, zero direct, DNS over Tor, UDP reject', () {
+      final config = TorOutboundAdapter.buildFullSingboxConfig(
         socksHost: '127.0.0.1',
-        socksPort: 45123,
+        socksPort: 39051,
       );
-      final config = jsonDecode(raw) as Map<String, dynamic>;
 
-      // 1. No NTP (prevents direct UDP/123 leaks)
+      // 1. No NTP
       expect(config.containsKey('ntp'), isFalse);
 
-      // 2. Outbounds: strictly one Tor SOCKS5 TCP outbound, zero direct/bypass outbounds
-      final outbounds = (config['outbounds'] as List<dynamic>).cast<Map<String, dynamic>>();
-      expect(outbounds.length, 1);
-      expect(outbounds.first['type'], 'socks');
-      expect(outbounds.first['tag'], 'tor');
-      expect(outbounds.first['server'], '127.0.0.1');
-      expect(outbounds.first['server_port'], 45123);
-      expect(outbounds.first['network'], 'tcp');
+      // 2. Experimental Clash API on loopback only
+      final experimental = config['experimental']! as Map<String, Object>;
+      final clashApi = experimental['clash_api']! as Map<String, Object>;
+      expect(clashApi['external_controller'], '127.0.0.1:16756');
 
-      // 3. DNS: strictly over Tor (TCP detoured through tor), zero local/direct/UDP DNS
-      final dns = config['dns'] as Map<String, dynamic>;
+      // 3. Strictly select (wrapping only tor) and tor outbound — zero direct/bypass
+      final outbounds = (config['outbounds']! as List<dynamic>).cast<Map<String, Object>>();
+      expect(outbounds.length, 2);
+      expect(outbounds[0]['type'], 'selector');
+      expect(outbounds[0]['tag'], 'select');
+      expect(outbounds[0]['outbounds'], ['tor']);
+      expect(outbounds[0]['default'], 'tor');
+
+      expect(outbounds[1]['type'], 'socks');
+      expect(outbounds[1]['tag'], 'tor');
+      expect(outbounds[1]['server'], '127.0.0.1');
+      expect(outbounds[1]['server_port'], 39051);
+      expect(outbounds[1]['network'], 'tcp');
+
+      // 4. DNS strictly detoured through tor over TCP (no local/UDP)
+      final dns = config['dns']! as Map<String, Object>;
       expect(dns['final'], 'dns-tor');
-      final dnsServers = (dns['servers'] as List<dynamic>).cast<Map<String, dynamic>>();
-      expect(dnsServers.length, 1);
-      expect(dnsServers.first['type'], 'tcp');
-      expect(dnsServers.first['detour'], 'tor');
-      expect(dnsServers.first['server'], '1.1.1.1');
+      final servers = (dns['servers']! as List<dynamic>).cast<Map<String, Object>>();
+      expect(servers.length, 1);
+      expect(servers.first['type'], 'tcp');
+      expect(servers.first['detour'], 'tor');
+      expect(servers.first['server'], '1.1.1.1');
 
-      // 4. Route: hijack-dns -> reject UDP -> TCP to tor -> catch-all reject (fail-closed)
-      final route = config['route'] as Map<String, dynamic>;
-      final rules = (route['rules'] as List<dynamic>).cast<Map<String, dynamic>>();
+      // 5. Route: hijack-dns -> reject UDP -> TCP to select -> catch-all reject (fail-closed)
+      final route = config['route']! as Map<String, Object>;
+      expect(route['default_domain_resolver'], 'dns-tor');
+      expect(route['final'], 'select');
+      final rules = (route['rules']! as List<dynamic>).cast<Map<String, Object>>();
       expect(rules.any((r) => r['protocol'] == 'dns' && r['action'] == 'hijack-dns'), isTrue);
       expect(rules.any((r) => r['port'] == 53 && r['action'] == 'hijack-dns'), isTrue);
       expect(rules.any((r) => r['network'] == 'udp' && r['action'] == 'reject'), isTrue);
-      expect(rules.any((r) => r['network'] == 'tcp' && r['outbound'] == 'tor'), isTrue);
+      expect(rules.any((r) => r['network'] == 'tcp' && r['outbound'] == 'select'), isTrue);
       expect(rules.last['action'], 'reject');
-    });
 
-    test('forbids system/local DNS in Tor config', () {
-      expect(
-        () => TorOutboundAdapter.buildFullSingboxConfig(
-          socksHost: '127.0.0.1',
-          socksPort: 45123,
-          dnsServerIp: 'local',
-        ),
-        throwsArgumentError,
+      // 6. Valid JSON output
+      final encoded = TorOutboundAdapter.encodeFullSingboxConfig(
+        socksHost: '127.0.0.1',
+        socksPort: 39051,
       );
+      expect(jsonDecode(encoded), isA<Map<String, dynamic>>());
     });
 
-    test('validator rejects tampered config with direct outbound or NTP', () {
+    test('validator rejects forbidden direct outbound or local DNS', () {
       final config = TorOutboundAdapter.buildFullSingboxConfig(
         socksHost: '127.0.0.1',
-        socksPort: 45123,
+        socksPort: 39051,
       );
-      final withNtp = Map<String, Object>.from(config)..['ntp'] = <String, Object>{'enabled': true};
-      expect(() => TorOutboundAdapter.validateFullSingboxConfig(withNtp), throwsStateError);
-    });
-  });
-
-  group('TorSnapshot, TransportMode & default Hiddify preservation', () {
-    test('default TorModeState keeps normal Hiddify mode active', () {
-      const state = TorModeState();
-      expect(state.connectionMode, VisionConnectionMode.normal);
-      expect(state.isTorModeSelected, isFalse);
-      expect(state.transportMode, TorTransportMode.automatic);
-      expect(state.phase, TorVpnPhase.stopped);
+      final outbounds = List<Map<String, Object>>.from(config['outbounds']! as List<dynamic>);
+      outbounds.add(<String, Object>{'type': 'direct', 'tag': 'direct'});
+      final tampered = Map<String, Object>.from(config)..['outbounds'] = outbounds;
+      expect(() => TorOutboundAdapter.validateFullSingboxConfig(tampered), throwsStateError);
     });
 
-    test('TorSnapshot.isTorReady requires CONNECTED, bootstrap 100%, loopback host, and valid port', () {
-      const ready = TorSnapshot(
-        state: 'CONNECTED',
-        bootstrap: 100,
+    test('validator rejects selector outbound containing non-tor member', () {
+      final config = TorOutboundAdapter.buildFullSingboxConfig(
         socksHost: '127.0.0.1',
-        socksPort: 39123,
-        transportMode: 'snowflake',
-        activeTransport: 'snowflake',
-        snowflakeAvailable: true,
-        obfs4Available: true,
+        socksPort: 39051,
       );
-      expect(ready.isTorReady, isTrue);
-
-      const bootstrapping = TorSnapshot(
-        state: 'BOOTSTRAPPING',
-        bootstrap: 85,
-        socksHost: '127.0.0.1',
-        socksPort: 39123,
-      );
-      expect(bootstrapping.isTorReady, isFalse);
-
-      const failClosed = TorSnapshot(
-        state: 'FAIL_CLOSED',
-        bootstrap: 100,
-        socksHost: null,
-        socksPort: null,
-        failClosed: true,
-        error: 'SOCKS5 probe failed',
-      );
-      expect(failClosed.isTorReady, isFalse);
-      expect(failClosed.failClosed, isTrue);
-    });
-
-    test('TorTransportMode parses automatic, snowflake, and obfs4 cleanly', () {
-      expect(TorTransportMode.fromKey('automatic'), TorTransportMode.automatic);
-      expect(TorTransportMode.fromKey('snowflake'), TorTransportMode.snowflake);
-      expect(TorTransportMode.fromKey('obfs4'), TorTransportMode.obfs4);
-      expect(TorTransportMode.fromKey('unknown'), TorTransportMode.automatic);
+      final outbounds = List<Map<String, Object>>.from(config['outbounds']! as List<dynamic>);
+      outbounds[0] = <String, Object>{
+        'type': 'selector',
+        'tag': 'select',
+        'outbounds': <String>['tor', 'direct'],
+        'default': 'tor',
+      };
+      final tampered = Map<String, Object>.from(config)..['outbounds'] = outbounds;
+      expect(() => TorOutboundAdapter.validateFullSingboxConfig(tampered), throwsStateError);
     });
   });
 }

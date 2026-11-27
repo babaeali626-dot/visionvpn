@@ -1,5 +1,5 @@
 /// Independent connection mode for Vision VPN.
-/// [normal] preserves 100% of upstream Hiddify v5.9.15 behavior.
+/// [normal] preserves 100% of standard VPN profile behavior.
 /// [tor] activates the standalone Tor VPN pipeline (Tor Android service -> live sing-box -> fail-closed VPN).
 enum VisionConnectionMode {
   normal,
@@ -33,6 +33,7 @@ enum TorVpnPhase {
   bootstrapping,
   verifyingSocks,
   startingVpn,
+  verifyingTunnel,
   connected,
   failClosed,
   recovering,
@@ -104,6 +105,7 @@ class TorModeState {
     this.phase = TorVpnPhase.stopped,
     this.snapshot = const TorSnapshot(state: 'STOPPED', bootstrap: 0),
     this.vpnActive = false,
+    this.tunnelVerified = false,
     this.statusMessage,
     this.lastError,
   });
@@ -113,6 +115,7 @@ class TorModeState {
   final TorVpnPhase phase;
   final TorSnapshot snapshot;
   final bool vpnActive;
+  final bool tunnelVerified;
   final String? statusMessage;
   final String? lastError;
 
@@ -123,6 +126,7 @@ class TorModeState {
       phase == TorVpnPhase.bootstrapping ||
       phase == TorVpnPhase.verifyingSocks ||
       phase == TorVpnPhase.startingVpn ||
+      phase == TorVpnPhase.verifyingTunnel ||
       phase == TorVpnPhase.recovering ||
       phase == TorVpnPhase.stopping;
 
@@ -132,6 +136,7 @@ class TorModeState {
     TorVpnPhase? phase,
     TorSnapshot? snapshot,
     bool? vpnActive,
+    bool? tunnelVerified,
     String? statusMessage,
     bool clearStatusMessage = false,
     String? lastError,
@@ -142,6 +147,7 @@ class TorModeState {
     phase: phase ?? this.phase,
     snapshot: snapshot ?? this.snapshot,
     vpnActive: vpnActive ?? this.vpnActive,
+    tunnelVerified: tunnelVerified ?? this.tunnelVerified,
     statusMessage: clearStatusMessage ? null : (statusMessage ?? this.statusMessage),
     lastError: clearLastError ? null : (lastError ?? this.lastError),
   );

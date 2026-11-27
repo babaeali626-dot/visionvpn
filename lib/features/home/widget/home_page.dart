@@ -43,19 +43,22 @@ class HomePage extends HookConsumerWidget {
     final torState = ref.watch(torModeNotifierProvider);
     final connStatus = ref.watch(connectionNotifierProvider).valueOrNull;
     final stats = ref.watch(statsNotifierProvider).valueOrNull;
+    final hasAnyProfile = ref.watch(hasAnyProfileProvider).value ?? false;
 
-    final isConnected = torState.isTorModeSelected
-        ? (torState.phase == TorVpnPhase.connected && torState.vpnActive)
-        : (connStatus is Connected);
+    final isTorConnected =
+        torState.isTorModeSelected && torState.phase == TorVpnPhase.connected && torState.vpnActive && torState.tunnelVerified;
+    final isConnected = torState.isTorModeSelected ? isTorConnected : (connStatus is Connected);
     final isFailClosed = torState.isTorModeSelected && torState.phase == TorVpnPhase.failClosed;
 
     final heroTitle = isFailClosed
         ? 'Fail-Closed Active'
         : (isConnected
             ? (torState.isTorModeSelected ? 'Connected via Tor' : 'Connected')
-            : (torState.isTorModeSelected && torState.isBusy
-                ? 'Tor ${torState.snapshot.bootstrap}%'
-                : 'Not Connected'));
+            : (torState.isTorModeSelected && torState.phase == TorVpnPhase.verifyingTunnel
+                ? 'Verifying Tor Tunnel'
+                : (torState.isTorModeSelected && torState.isBusy
+                    ? 'Tor ${torState.snapshot.bootstrap}%'
+                    : 'Not Connected')));
 
     final heroSubtitle = isFailClosed
         ? 'Tor stopped · Device traffic blocked safely'
@@ -63,7 +66,9 @@ class HomePage extends HookConsumerWidget {
             ? (torState.lastError ??
                 torState.statusMessage ??
                 'Standalone Tor · ${torState.transportMode.label} · DNS over Tor')
-            : 'Tap the button below to establish a secure connection');
+            : 'Tap the button below to establish a secure VPN connection');
+
+    final showProxiesBar = !torState.isTorModeSelected && hasAnyProfile;
 
     return Scaffold(
       appBar: AppBar(
@@ -169,11 +174,11 @@ class HomePage extends HookConsumerWidget {
                   child: ScrollConfiguration(
                     behavior: ScrollConfiguration.of(context).copyWith(overscroll: false),
                     child: CustomScrollView(
-                      physics: const ClampingScrollPhysics(),
+                      physics: const AlwaysScrollableScrollPhysics(parent: ClampingScrollPhysics()),
                       slivers: [
                         MultiSliver(
                           children: [
-                            // 1. Hero Connection Card (inspired by Vision VPN cosmic design)
+                            // 1. Hero Connection Card
                             Padding(
                               padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
                               child: Container(
@@ -259,21 +264,21 @@ class HomePage extends HookConsumerWidget {
                                     ),
                                     const Gap(10),
                                     const ConnectionButton(),
-                                    const ActiveProxyDelayIndicator(),
+                                    if (!torState.isTorModeSelected) const ActiveProxyDelayIndicator(),
                                   ],
                                 ),
                               ),
                             ),
 
-                            // 2. Independent Connection Mode Switcher (Hiddify | Tor)
+                            // 2. Mode Switcher (VPN | Tor)
                             Padding(
                               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                               child: SegmentedButton<VisionConnectionMode>(
                                 segments: const [
                                   ButtonSegment<VisionConnectionMode>(
                                     value: VisionConnectionMode.normal,
-                                    icon: Icon(Icons.public_rounded, size: 18),
-                                    label: Text('Hiddify'),
+                                    icon: Icon(Icons.shield_rounded, size: 18),
+                                    label: Text('VPN'),
                                   ),
                                   ButtonSegment<VisionConnectionMode>(
                                     value: VisionConnectionMode.tor,
@@ -290,7 +295,7 @@ class HomePage extends HookConsumerWidget {
                               ),
                             ),
 
-                            // 3. Server Location / Active Profile OR Live Tor Transport Card
+                            // 3. Active VPN Profile (VPN mode) OR compact shortcut to dedicated Tor tab (Tor mode)
                             if (torState.isTorModeSelected)
                               Padding(
                                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -309,7 +314,7 @@ class HomePage extends HookConsumerWidget {
                                     subtitle: Text(
                                       torState.lastError ??
                                           torState.statusMessage ??
-                                          'Tap to configure Snowflake, obfs4 & Custom Bridges',
+                                          'Manage Transport & Bridges in the Tor tab',
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
                                     ),
@@ -328,98 +333,7 @@ class HomePage extends HookConsumerWidget {
                                 _ => const SizedBox.shrink(),
                               },
 
-                            // 4. Two-Column Quick Cards (Protocol/Transport & Quick Tor Switch)
-                            Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: Card(
-                                      margin: EdgeInsets.zero,
-                                      child: InkWell(
-                                        borderRadius: BorderRadius.circular(18),
-                                        onTap: () => context.goNamed('tor'),
-                                        child: Padding(
-                                          padding: const EdgeInsets.all(14),
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Row(
-                                                children: [
-                                                  const Icon(Icons.layers_rounded, size: 16, color: Color(0xFFA855F7)),
-                                                  const Gap(6),
-                                                  Text(
-                                                    torState.isTorModeSelected ? 'Transport' : 'Engine',
-                                                    style: theme.textTheme.labelMedium?.copyWith(
-                                                      color: theme.colorScheme.onSurfaceVariant,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                              const Gap(6),
-                                              Text(
-                                                torState.isTorModeSelected
-                                                    ? torState.transportMode.label
-                                                    : 'Hiddify Core',
-                                                style: theme.textTheme.titleSmall?.copyWith(
-                                                  fontWeight: FontWeight.bold,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  const Gap(10),
-                                  Expanded(
-                                    child: Card(
-                                      margin: EdgeInsets.zero,
-                                      child: Padding(
-                                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                                        child: Row(
-                                          children: [
-                                            Expanded(
-                                              child: Column(
-                                                crossAxisAlignment: CrossAxisAlignment.start,
-                                                children: [
-                                                  Text(
-                                                    'Tor Shield',
-                                                    style: theme.textTheme.labelMedium?.copyWith(
-                                                      color: theme.colorScheme.onSurfaceVariant,
-                                                    ),
-                                                  ),
-                                                  Text(
-                                                    torState.isTorModeSelected ? 'Active' : 'Off',
-                                                    style: theme.textTheme.titleSmall?.copyWith(
-                                                      fontWeight: FontWeight.bold,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                            Switch(
-                                              value: torState.isTorModeSelected,
-                                              activeColor: Colors.white,
-                                              activeTrackColor: const Color(0xFF7C3AED),
-                                              onChanged: torState.isBusy
-                                                  ? null
-                                                  : (val) => ref
-                                                      .read(torModeNotifierProvider.notifier)
-                                                      .setConnectionMode(
-                                                        val ? VisionConnectionMode.tor : VisionConnectionMode.normal,
-                                                      ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-
-                            // 5. Traffic Usage Card (Download / Upload)
+                            // 4. Traffic Usage Card (Download / Upload)
                             Padding(
                               padding: const EdgeInsets.fromLTRB(16, 6, 16, 12),
                               child: Card(
@@ -491,8 +405,8 @@ class HomePage extends HookConsumerWidget {
                               ),
                             ),
 
-                            const ActiveProxyFooter(),
-                            const Gap(64),
+                            if (!torState.isTorModeSelected) const ActiveProxyFooter(),
+                            Gap(showProxiesBar ? 68 : 24),
                           ],
                         ),
                       ],
@@ -500,7 +414,7 @@ class HomePage extends HookConsumerWidget {
                   ),
                 ),
               ),
-              if (ref.watch(hasAnyProfileProvider).value ?? false)
+              if (showProxiesBar)
                 Positioned(
                   right: 0,
                   left: 0,
@@ -523,7 +437,7 @@ class HomePage extends HookConsumerWidget {
                           ),
                           onTap: () => ref.read(bottomSheetsNotifierProvider.notifier).showProxies(),
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+                            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [

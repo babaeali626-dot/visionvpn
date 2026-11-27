@@ -77,17 +77,28 @@ class _TorPageState extends ConsumerState<TorPage> {
     final snap = torState.snapshot;
     final theme = Theme.of(context);
 
-    final isVpnConnected = torState.phase == TorVpnPhase.connected && torState.vpnActive;
+    final isVpnConnected =
+        torState.phase == TorVpnPhase.connected && torState.vpnActive && torState.tunnelVerified;
     final isFailClosed = torState.phase == TorVpnPhase.failClosed || snap.failClosed;
-    final canStop = torState.phase != TorVpnPhase.stopped || snap.state != 'STOPPED' || torState.vpnActive || isFailClosed;
+    final canStop =
+        torState.isBusy || torState.phase != TorVpnPhase.stopped || snap.state != 'STOPPED' || torState.vpnActive || isFailClosed;
     final statusColor = isFailClosed
         ? theme.colorScheme.error
         : (isVpnConnected ? const Color(0xFF2DD4BF) : const Color(0xFFA855F7));
 
+    final vpnTunnelStatus = isFailClosed
+        ? 'Blocked (Fail-Closed)'
+        : (isVpnConnected
+            ? 'Verified (TCP + DNS over Tor, UDP blocked)'
+            : (torState.phase == TorVpnPhase.verifyingTunnel
+                ? 'Verifying live End-to-End traffic...'
+                : (torState.phase == TorVpnPhase.startingVpn ? 'Starting sing-box TUN...' : 'Inactive')));
+
     return Scaffold(
       appBar: AppBar(title: const Text('Vision VPN · Tor')),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 112),
+        physics: const AlwaysScrollableScrollPhysics(parent: ClampingScrollPhysics()),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
         children: [
           Card(
             child: Padding(
@@ -101,8 +112,8 @@ class _TorPageState extends ConsumerState<TorPage> {
                     segments: const [
                       ButtonSegment<VisionConnectionMode>(
                         value: VisionConnectionMode.normal,
-                        icon: Icon(Icons.public_rounded),
-                        label: Text('Hiddify'),
+                        icon: Icon(Icons.shield_rounded),
+                        label: Text('VPN'),
                       ),
                       ButtonSegment<VisionConnectionMode>(
                         value: VisionConnectionMode.tor,
@@ -139,7 +150,6 @@ class _TorPageState extends ConsumerState<TorPage> {
                   const SizedBox(height: 12),
                   LinearProgressIndicator(value: snap.bootstrap.clamp(0, 100) / 100),
                   const SizedBox(height: 12),
-                  // Separate 4-layer status breakdown (Daemon, Bootstrap, SOCKS5, VPN Tunnel)
                   _StatusRow(label: 'Tor Engine', value: snap.state),
                   _StatusRow(
                     label: 'Bootstrap',
@@ -151,9 +161,7 @@ class _TorPageState extends ConsumerState<TorPage> {
                   ),
                   _StatusRow(
                     label: 'VPN Tunnel',
-                    value: isFailClosed
-                        ? 'Blocked (Fail-Closed)'
-                        : (isVpnConnected ? 'Active (TCP + DNS over Tor, UDP blocked)' : 'Inactive'),
+                    value: vpnTunnelStatus,
                   ),
                   _StatusRow(
                     label: 'Transport',
@@ -191,7 +199,7 @@ class _TorPageState extends ConsumerState<TorPage> {
                         ),
                       if (canStop)
                         OutlinedButton.icon(
-                          onPressed: () => notifier.disconnectTorVpn(),
+                          onPressed: torState.phase == TorVpnPhase.stopping ? null : () => notifier.disconnectTorVpn(),
                           icon: const Icon(Icons.stop_rounded),
                           label: const Text('Stop / Disconnect'),
                         ),
@@ -299,6 +307,7 @@ class _TorPageState extends ConsumerState<TorPage> {
     TorVpnPhase.bootstrapping => 'Bootstrapping Tor...',
     TorVpnPhase.verifyingSocks => 'Verifying SOCKS5...',
     TorVpnPhase.startingVpn => 'Starting Tor VPN Tunnel...',
+    TorVpnPhase.verifyingTunnel => 'Verifying Live Tor Tunnel...',
     TorVpnPhase.connected => 'Tor VPN Connected',
     TorVpnPhase.failClosed => 'Fail-Closed (Traffic Blocked)',
     TorVpnPhase.recovering => 'Recovering Tor...',
