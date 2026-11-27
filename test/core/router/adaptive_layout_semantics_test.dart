@@ -103,7 +103,8 @@ void main() {
     final handle = tester.ensureSemantics();
     await pumpShell(tester, size: const Size(400, 800), mobile: true);
 
-    for (final title in ['Home', 'Settings']) {
+    // The mobile navigation intentionally labels the Home/VPN destination as VPN.
+    for (final title in ['VPN', 'Settings']) {
       expect(destination(title), findsOne);
     }
     handle.dispose();
