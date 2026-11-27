@@ -123,9 +123,10 @@ class MyAdaptiveLayout extends HookConsumerWidget {
   }
 
   List<ShellRouteAction> _actions(Translations t, bool showProfilesAction, bool isMobileBreakpoint) => [
-    isMobileBreakpoint
-        ? const ShellRouteAction(Icons.shield_rounded, 'VPN')
-        : ShellRouteAction(Icons.shield_rounded, t.pages.home.title),
+    if (isMobileBreakpoint)
+      const ShellRouteAction(Icons.shield_rounded, 'VPN')
+    else
+      ShellRouteAction(Icons.shield_rounded, t.pages.home.title),
     if (isMobileBreakpoint || showProfilesAction) ShellRouteAction(Icons.layers_rounded, t.pages.profiles.title),
     if (isMobileBreakpoint) const ShellRouteAction(Icons.shield_moon_rounded, 'Tor'),
     ShellRouteAction(Icons.tune_rounded, t.pages.settings.title),
@@ -211,7 +212,7 @@ class _FloatingNavItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final activeColor = Colors.white;
+    const activeColor = Colors.white;
     final inactiveColor = isDark ? const Color(0xFF9CA3AF) : Theme.of(context).colorScheme.onSurfaceVariant;
 
     return Semantics(

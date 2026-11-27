@@ -358,7 +358,8 @@
           "updateFailing": "Updates keep failing",
           "updateFailingSince": "Updates failing since ${date}"
         }
-      }
+      },
+      "empty": "No profiles yet"
     },
     "profileDetails": {
       "title": "Profile",

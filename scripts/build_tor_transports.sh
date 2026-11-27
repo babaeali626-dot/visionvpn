@@ -26,12 +26,10 @@ rm -rf "${BUILD_TMP}"
 mkdir -p "${BUILD_TMP}"
 
 echo "==> Cloning Tor Project lyrebird (${LYREBIRD_REF})..."
-git clone --depth 1 --branch "${LYREBIRD_REF}" "${LYREBIRD_REPO}" "${BUILD_TMP}/lyrebird" \
-  || git clone --depth 1 "${LYREBIRD_REPO}" "${BUILD_TMP}/lyrebird"
+git clone --depth 1 --branch "${LYREBIRD_REF}" "${LYREBIRD_REPO}" "${BUILD_TMP}/lyrebird"
 
 echo "==> Cloning Tor Project snowflake (${SNOWFLAKE_REF})..."
-git clone --depth 1 --branch "${SNOWFLAKE_REF}" "${SNOWFLAKE_REPO}" "${BUILD_TMP}/snowflake" \
-  || git clone --depth 1 "${SNOWFLAKE_REPO}" "${BUILD_TMP}/snowflake"
+git clone --depth 1 --branch "${SNOWFLAKE_REF}" "${SNOWFLAKE_REPO}" "${BUILD_TMP}/snowflake"
 
 build_for_abi() {
   local abi="$1"

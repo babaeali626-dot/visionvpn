@@ -5,5 +5,5 @@ class ShellRouteAction {
   final IconData icon;
   final String title;
 
-  ShellRouteAction(this.icon, this.title);
+  const ShellRouteAction(this.icon, this.title);
 }
