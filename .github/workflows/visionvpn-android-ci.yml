@@ -164,6 +164,12 @@ jobs:
             fi
           done
 
+      - name: Remove duplicate legacy Hiddify webp launcher icons
+        shell: bash
+        run: |
+          rm -f android/app/src/main/res/mipmap-*/ic_launcher.webp \
+                android/app/src/main/res/mipmap-*/ic_launcher_round.webp
+
       - name: Build Android release APKs (per-ABI and universal)
         shell: bash
         run: |
