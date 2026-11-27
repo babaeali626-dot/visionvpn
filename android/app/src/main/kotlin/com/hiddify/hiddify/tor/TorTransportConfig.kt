@@ -4,15 +4,16 @@ import android.content.Context
 import java.io.File
 
 /**
- * Manages Android-compatible Tor Pluggable Transport binaries (Snowflake and obfs4/lyrebird)
- * packaged into nativeLibraryDir as libsnowflake.so and liblyrebird.so, plus torrc generation
- * and strict bridge line validation.
+ * Manages Android-compatible Tor binary (libtor.so) and Pluggable Transport binaries
+ * (Snowflake -> libsnowflake.so, obfs4/lyrebird -> liblyrebird.so) packaged into nativeLibraryDir,
+ * plus torrc generation and strict bridge line validation.
  */
 internal object TorTransportConfig {
     const val MODE_AUTOMATIC = "automatic"
     const val MODE_SNOWFLAKE = "snowflake"
     const val MODE_OBFS4 = "obfs4"
 
+    private const val TOR_LIB = "libtor.so"
     private const val SNOWFLAKE_LIB = "libsnowflake.so"
     private const val LYREBIRD_LIB = "liblyrebird.so"
 
@@ -53,8 +54,10 @@ internal object TorTransportConfig {
     )
 
     data class Capabilities(
+        val torAvailable: Boolean,
         val snowflakeAvailable: Boolean,
         val obfs4Available: Boolean,
+        val torPath: String?,
         val snowflakePath: String?,
         val obfs4Path: String?,
     )
@@ -76,13 +79,17 @@ internal object TorTransportConfig {
 
     fun capabilities(context: Context): Capabilities {
         val nativeDir = File(context.applicationInfo.nativeLibraryDir)
+        val tor = File(nativeDir, TOR_LIB)
         val snowflake = File(nativeDir, SNOWFLAKE_LIB)
         val lyrebird = File(nativeDir, LYREBIRD_LIB)
+        val torOk = tor.exists() && tor.canExecute()
         val snowflakeOk = snowflake.exists() && snowflake.canExecute()
         val obfs4Ok = lyrebird.exists() && lyrebird.canExecute()
         return Capabilities(
+            torAvailable = torOk,
             snowflakeAvailable = snowflakeOk,
             obfs4Available = obfs4Ok,
+            torPath = if (torOk) tor.absolutePath else null,
             snowflakePath = if (snowflakeOk) snowflake.absolutePath else null,
             obfs4Path = if (obfs4Ok) lyrebird.absolutePath else null,
         )
@@ -146,8 +153,13 @@ internal object TorTransportConfig {
         context: Context,
         requestedMode: String,
         customBridgeLines: List<String>,
+        socksPort: Int,
+        dataDir: File,
+        cacheDir: File,
+        owningPid: Int,
         forceSnowflakeFallback: Boolean = false,
     ): BuiltTorrc {
+        require(socksPort in 1..65535) { "Invalid SOCKS port: $socksPort" }
         val caps = capabilities(context)
         val mode = normalizeMode(requestedMode)
         val sanitizedCustom = customBridgeLines
@@ -187,8 +199,6 @@ internal object TorTransportConfig {
                 selectedBridges += if (customObfs4.isNotEmpty()) customObfs4 else DEFAULT_OBFS4_BRIDGES
             }
             else -> {
-                // Automatic mode: honor user-supplied bridges first (if their transport binary exists),
-                // otherwise connect directly to Tor guards first (with Snowflake fallback handled by TorEngineManager).
                 when {
                     customObfs4.isNotEmpty() && caps.obfs4Path != null -> {
                         resolvedTransport = MODE_OBFS4
@@ -212,12 +222,19 @@ internal object TorTransportConfig {
         }
 
         val torrc = buildString {
+            appendLine("RunAsDaemon 0")
             appendLine("ClientOnly 1")
             appendLine("SafeSocks 1")
             appendLine("TestSocks 1")
-            appendLine("SocksPort 127.0.0.1:auto IsolateClientAddr IsolateSOCKSAuth IsolateClientProtocol IsolateDestPort IsolateDestAddr")
             appendLine("AvoidDiskWrites 1")
             appendLine("DormantCanceledByStartup 1")
+            appendLine("Log notice stdout")
+            appendLine("DataDirectory ${dataDir.absolutePath}")
+            appendLine("CacheDirectory ${cacheDir.absolutePath}")
+            appendLine("SocksPort 127.0.0.1:$socksPort IsolateClientAddr IsolateSOCKSAuth IsolateClientProtocol IsolateDestPort IsolateDestAddr")
+            if (owningPid > 0) {
+                appendLine("__OwningControllerProcess $owningPid")
+            }
             if (selectedBridges.isNotEmpty()) {
                 appendLine("UseBridges 1")
                 pluginLines.forEach(::appendLine)

@@ -247,7 +247,7 @@ class TorModeNotifier extends StateNotifier<TorModeState> {
       socksPort: port,
     );
 
-    final directories = _ref.read(appDirectoriesProvider).requireValue;
+    final directories = await _ref.read(appDirectoriesProvider.future);
     final configFile = File('${directories.workingDir.path}/visionvpn_tor_active.json');
     await configFile.writeAsString(configJson, flush: true);
 

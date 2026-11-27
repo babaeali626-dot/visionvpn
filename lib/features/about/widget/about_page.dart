@@ -13,7 +13,6 @@ import 'package:hiddify/core/router/dialog/dialog_notifier.dart';
 import 'package:hiddify/core/widget/adaptive_icon.dart';
 import 'package:hiddify/features/app_update/notifier/app_update_notifier.dart';
 import 'package:hiddify/features/app_update/notifier/app_update_state.dart';
-import 'package:hiddify/gen/assets.gen.dart';
 import 'package:hiddify/utils/utils.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
@@ -25,6 +24,7 @@ class AboutPage extends HookConsumerWidget {
     final t = ref.watch(translationsProvider).requireValue;
     final appInfo = ref.watch(appInfoProvider).requireValue;
     final appUpdate = ref.watch(appUpdateNotifierProvider);
+    final theme = Theme.of(context);
 
     ref.listen(appUpdateNotifierProvider, (_, next) async {
       if (!context.mounted) return;
@@ -95,20 +95,63 @@ class AboutPage extends HookConsumerWidget {
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.all(16),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Assets.images.logo.svg(width: 64, height: 64),
-                  const Gap(16),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
                     children: [
-                      Text(t.common.appTitle, style: Theme.of(context).textTheme.titleLarge),
-                      const Gap(4),
-                      Text("${t.common.version} ${appInfo.presentVersion}"),
+                      Container(
+                        width: 68,
+                        height: 68,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: const LinearGradient(
+                            colors: [Color(0xFF7C3AED), Color(0xFFA855F7)],
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: const Color(0xFF8B5CF6).withValues(alpha: 0.45),
+                              blurRadius: 20,
+                            ),
+                          ],
+                        ),
+                        child: const Icon(Icons.visibility_rounded, size: 36, color: Colors.white),
+                      ),
+                      const Gap(14),
+                      Text.rich(
+                        TextSpan(
+                          children: [
+                            TextSpan(
+                              text: 'Vision ',
+                              style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+                            ),
+                            TextSpan(
+                              text: 'VPN',
+                              style: theme.textTheme.headlineSmall?.copyWith(
+                                fontWeight: FontWeight.bold,
+                                color: const Color(0xFFA855F7),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Gap(6),
+                      Text(
+                        'اپ Vision VPN توسعه یافته بر روی گیت',
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          color: const Color(0xFFD8B4FE),
+                          fontWeight: FontWeight.w600,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const Gap(6),
+                      Text(
+                        "${t.common.version} ${appInfo.presentVersion}",
+                        style: theme.textTheme.bodySmall,
+                      ),
                     ],
                   ),
-                ],
+                ),
               ),
             ),
           ),

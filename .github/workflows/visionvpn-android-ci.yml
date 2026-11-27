@@ -204,6 +204,7 @@ jobs:
           ls -lh dist-apks/
           test -s dist-apks/VisionVPN-Android-arm64-v8a.apk
           # Verify real Snowflake and obfs4 (lyrebird) binaries are packaged inside the arm64 APK.
+          unzip -l dist-apks/VisionVPN-Android-arm64-v8a.apk | grep -q "lib/arm64-v8a/libtor.so"
           unzip -l dist-apks/VisionVPN-Android-arm64-v8a.apk | grep -q "lib/arm64-v8a/libsnowflake.so"
           unzip -l dist-apks/VisionVPN-Android-arm64-v8a.apk | grep -q "lib/arm64-v8a/liblyrebird.so"
           echo "Verified Snowflake and obfs4 binaries inside built APK."

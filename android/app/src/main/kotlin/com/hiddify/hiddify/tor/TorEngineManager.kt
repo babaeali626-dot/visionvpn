@@ -1,30 +1,31 @@
 package com.hiddify.hiddify.tor
 
-import android.content.BroadcastReceiver
-import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.content.ServiceConnection
 import android.os.Handler
-import android.os.IBinder
 import android.os.Looper
+import android.os.Process as AndroidProcess
 import android.util.Log
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.hiddify.hiddify.Settings
-import org.torproject.jni.TorService
+import java.io.BufferedReader
+import java.io.File
+import java.io.InputStreamReader
+import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Owns the embedded Tor Android service, Pluggable Transport configuration (Automatic, Snowflake,
- * obfs4), SOCKS5 handshake verification, continuous health watchdog, and Fail-Closed notifications.
+ * Owns the embedded Tor daemon as an isolated OS child process (executing libtor.so from
+ * nativeLibraryDir, inspired by modern Android native tunnel runners such as SlipNet/Orbot).
  *
- * It never creates a second Android VPN service; sing-box/VPNService consumes the verified
- * loopback SOCKS5 listener and enforces strict routing + fail-closed blackhole protection.
+ * Running Tor in an isolated child process completely avoids JNI/signal-handler conflicts with
+ * Go's hiddify-core.aar runtime (which previously caused immediate crashes on Tor connect),
+ * enables real-time stdout bootstrap & Pluggable Transport error parsing, and allows deterministic
+ * Fail-Closed detection and clean process termination.
  */
 internal class TorEngineManager private constructor(private val context: Context) {
     enum class State {
@@ -76,10 +77,9 @@ internal class TorEngineManager private constructor(private val context: Context
         fun onTorRecovered(socksHost: String, socksPort: Int)
     }
 
-    private var service: TorService? = null
-    private var bound = false
-    private var receiverRegistered = false
-    private val localBroadcasts by lazy { LocalBroadcastManager.getInstance(context) }
+    @Volatile
+    private var torProcess: Process? = null
+    private val runGeneration = AtomicInteger(0)
 
     private var state = State.STOPPED
     private var bootstrap = 0
@@ -91,6 +91,7 @@ internal class TorEngineManager private constructor(private val context: Context
     private var transportError: String? = null
     private var failClosed: Boolean = false
     private var socksPort: Int? = null
+    private var pendingSocksPort: Int? = null
 
     private var lastBridges: List<String> = emptyList()
     private var autoFallbackAttempted = false
@@ -101,34 +102,71 @@ internal class TorEngineManager private constructor(private val context: Context
     private val failClosedListeners = CopyOnWriteArraySet<FailClosedListener>()
     private val starting = AtomicBoolean(false)
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val ioExecutor = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "VisionVPN-TorWatchdog").apply { isDaemon = true }
+    private val ioExecutor = Executors.newCachedThreadPool { r ->
+        Thread(r, "VisionVPN-TorWorker").apply { isDaemon = true }
     }
 
-    private val bootstrapPoll = object : Runnable {
+    private val torRootDir: File
+        get() = File(context.filesDir, "visionvpn_tor").apply { mkdirs() }
+    private val torDataDir: File
+        get() = File(torRootDir, "data").apply { mkdirs() }
+    private val torCacheDir: File
+        get() = File(torRootDir, "cache").apply { mkdirs() }
+    private val torrcFile: File
+        get() = File(torRootDir, "torrc")
+
+    private val autoFallbackWatchdog = object : Runnable {
         override fun run() {
-            if (state != State.BOOTSTRAPPING && state != State.RECOVERING) return
-            ioExecutor.execute {
-                pollBootstrapPhase()
+            var triggerSnowflake = false
+            synchronized(this@TorEngineManager) {
+                if (state != State.BOOTSTRAPPING && state != State.RECOVERING) return
+                val elapsed = System.currentTimeMillis() - bootstrapStartedAtMs
+                if (
+                    transportMode == TorTransportConfig.MODE_AUTOMATIC &&
+                    activeTransport == "direct" &&
+                    !autoFallbackAttempted &&
+                    elapsed >= AUTO_SNOWFLAKE_FALLBACK_MS &&
+                    bootstrap < 50 &&
+                    capabilities().snowflakeAvailable
+                ) {
+                    autoFallbackAttempted = true
+                    triggerSnowflake = true
+                } else {
+                    mainHandler.postDelayed(this, 3000L)
+                }
             }
-            mainHandler.postDelayed(this, BOOTSTRAP_POLL_MS)
+            if (triggerSnowflake) {
+                Log.i(TAG, "Automatic mode: direct Tor stalled below 50%, switching to Snowflake")
+                synchronized(this@TorEngineManager) {
+                    stopProcessOnly()
+                    starting.set(true)
+                    startInternal(lastBridges, forceSnowflakeFallback = true)
+                }
+            }
         }
     }
 
     private val healthWatchdog = object : Runnable {
         override fun run() {
-            if (state != State.CONNECTED) return
-            val port = socksPort
-            if (port == null || service == null) {
-                triggerFailClosed("Tor daemon or SOCKS5 listener is no longer active")
+            val port: Int?
+            val proc: Process?
+            synchronized(this@TorEngineManager) {
+                if (state != State.CONNECTED) return
+                port = socksPort
+                proc = torProcess
+            }
+            if (port == null || proc == null || !isProcessAlive(proc)) {
+                triggerFailClosed("Tor daemon process exited unexpectedly")
                 return
             }
             ioExecutor.execute {
                 val ok = probeSocks5Loopback(port, PROBE_TIMEOUT_MS)
+                var reschedule = false
                 synchronized(this@TorEngineManager) {
                     if (state != State.CONNECTED) return@execute
                     if (ok) {
                         consecutiveProbeFailures = 0
+                        reschedule = true
                     } else {
                         consecutiveProbeFailures++
                         Log.w(TAG, "Tor SOCKS5 health probe failed ($consecutiveProbeFailures/$MAX_PROBE_FAILURES)")
@@ -136,86 +174,11 @@ internal class TorEngineManager private constructor(private val context: Context
                             triggerFailClosed("Tor SOCKS5 listener 127.0.0.1:$port stopped responding")
                             return@execute
                         }
+                        reschedule = true
                     }
                 }
-                mainHandler.postDelayed(this, WATCHDOG_INTERVAL_MS)
-            }
-        }
-    }
-
-    private val receiver = object : BroadcastReceiver() {
-        override fun onReceive(c: Context?, intent: Intent?) {
-            val action = intent?.action ?: return
-            if (action == TorService.ACTION_ERROR) {
-                val msg = intent.getStringExtra(TorService.EXTRA_STATUS)
-                    ?: "Tor reported a startup or transport error"
-                handleTorRuntimeFailure(msg)
-                return
-            }
-            if (action != TorService.ACTION_STATUS) return
-            when (intent.getStringExtra(TorService.EXTRA_STATUS)) {
-                TorService.STATUS_STARTING -> {
-                    synchronized(this@TorEngineManager) {
-                        if (state != State.STOPPING) {
-                            bootstrapStartedAtMs = System.currentTimeMillis()
-                            transportStatus = "Bootstrapping ($activeTransport)"
-                            setState(if (failClosed) State.RECOVERING else State.BOOTSTRAPPING)
-                        }
-                    }
-                }
-                TorService.STATUS_ON -> {
-                    val reportedPort = service?.socksPort ?: 0
-                    if (reportedPort !in 1..65535) {
-                        handleTorRuntimeFailure("Tor reported ON without a valid SOCKS5 port")
-                        return
-                    }
-                    // Delete temporary torrc now that Tor has loaded it.
-                    runCatching { TorService.getTorrc(context).delete() }
-                    synchronized(this@TorEngineManager) {
-                        bootstrap = 100
-                        bootstrapSummary = "Done"
-                        setState(State.VERIFYING_SOCKS)
-                    }
-                    verifySocksAndPromote(reportedPort)
-                }
-                TorService.STATUS_STOPPING, TorService.STATUS_OFF -> {
-                    synchronized(this@TorEngineManager) {
-                        if (state == State.CONNECTED) {
-                            triggerFailClosed("Tor service stopped unexpectedly")
-                        } else if (state != State.STOPPING && state != State.FAIL_CLOSED) {
-                            socksPort = null
-                            Settings.torSocksPort = 0
-                            setState(State.STOPPED)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private val connection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            service = (binder as? TorService.LocalBinder)?.service
-            if (service == null) {
-                handleTorRuntimeFailure("Tor service binder unavailable")
-                return
-            }
-            synchronized(this@TorEngineManager) {
-                bootstrapStartedAtMs = System.currentTimeMillis()
-                setState(if (failClosed) State.RECOVERING else State.BOOTSTRAPPING)
-            }
-        }
-
-        override fun onServiceDisconnected(name: ComponentName?) {
-            synchronized(this@TorEngineManager) {
-                service = null
-                bound = false
-                socksPort = null
-                Settings.torSocksPort = 0
-                if (state == State.CONNECTED) {
-                    triggerFailClosed("Tor service process disconnected unexpectedly")
-                } else if (state != State.STOPPING && state != State.FAIL_CLOSED) {
-                    setState(State.ERROR, "Tor service disconnected")
+                if (reschedule) {
+                    mainHandler.postDelayed(this, WATCHDOG_INTERVAL_MS)
                 }
             }
         }
@@ -264,7 +227,7 @@ internal class TorEngineManager private constructor(private val context: Context
     @Synchronized
     fun recover(bridgeLines: List<String> = lastBridges) {
         if (state == State.STARTING || state == State.BOOTSTRAPPING || state == State.VERIFYING_SOCKS) return
-        stopDaemonOnly()
+        stopProcessOnly()
         starting.set(true)
         setState(State.RECOVERING)
         startInternal(bridgeLines, forceSnowflakeFallback = autoFallbackAttempted)
@@ -272,53 +235,157 @@ internal class TorEngineManager private constructor(private val context: Context
 
     @Synchronized
     private fun startInternal(bridgeLines: List<String>, forceSnowflakeFallback: Boolean) {
+        val generation = runGeneration.incrementAndGet()
         error = null
         transportError = null
         bootstrap = 0
         bootstrapSummary = "Starting Tor daemon"
         consecutiveProbeFailures = 0
+        socksPort = null
+        pendingSocksPort = null
+        Settings.torSocksPort = 0
         setState(if (failClosed) State.RECOVERING else State.STARTING)
 
-        try {
-            val built = TorTransportConfig.buildTorrc(
-                context = context,
-                requestedMode = transportMode,
-                customBridgeLines = bridgeLines,
-                forceSnowflakeFallback = forceSnowflakeFallback,
-            )
-            activeTransport = built.activeTransport
-            transportStatus = "Initializing transport: ${built.activeTransport}"
+        ioExecutor.execute {
+            try {
+                val caps = capabilities()
+                val torBinPath = caps.torPath
+                    ?: throw IllegalStateException(
+                        "Tor native binary (libtor.so) is missing or not executable in nativeLibraryDir"
+                    )
 
-            TorService.getTorrc(context).writeText(built.content)
+                val allocatedPort = allocateLoopbackPort()
+                val built = TorTransportConfig.buildTorrc(
+                    context = context,
+                    requestedMode = transportMode,
+                    customBridgeLines = bridgeLines,
+                    socksPort = allocatedPort,
+                    dataDir = torDataDir,
+                    cacheDir = torCacheDir,
+                    owningPid = AndroidProcess.myPid(),
+                    forceSnowflakeFallback = forceSnowflakeFallback,
+                )
 
-            if (!receiverRegistered) {
-                val filter = IntentFilter().apply {
-                    addAction(TorService.ACTION_STATUS)
-                    addAction(TorService.ACTION_ERROR)
+                synchronized(this@TorEngineManager) {
+                    if (generation != runGeneration.get()) return@execute
+                    activeTransport = built.activeTransport
+                    pendingSocksPort = allocatedPort
+                    bootstrapStartedAtMs = System.currentTimeMillis()
+                    transportStatus = "Bootstrapping via ${built.activeTransport}"
                 }
-                localBroadcasts.registerReceiver(receiver, filter)
-                receiverRegistered = true
-            }
 
-            val intent = Intent(context, TorService::class.java)
-            bound = context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
-            if (!bound) {
-                throw IllegalStateException("Could not bind embedded TorService")
+                torrcFile.writeText(built.content)
+
+                val pb = ProcessBuilder(torBinPath, "-f", torrcFile.absolutePath)
+                pb.directory(torDataDir)
+                pb.redirectErrorStream(true)
+                val env = pb.environment()
+                val nativeDir = context.applicationInfo.nativeLibraryDir
+                env["LD_LIBRARY_PATH"] = nativeDir
+                env["HOME"] = torDataDir.absolutePath
+                env["TMPDIR"] = torCacheDir.absolutePath
+
+                val proc = pb.start()
+                synchronized(this@TorEngineManager) {
+                    if (generation != runGeneration.get()) {
+                        runCatching { proc.destroyForcibly() }
+                        return@execute
+                    }
+                    torProcess = proc
+                    setState(if (failClosed) State.RECOVERING else State.BOOTSTRAPPING)
+                }
+
+                mainHandler.removeCallbacks(autoFallbackWatchdog)
+                mainHandler.postDelayed(autoFallbackWatchdog, 5000L)
+
+                streamTorOutput(proc, allocatedPort, generation)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Tor process start failed", t)
+                runCatching { torrcFile.delete() }
+                synchronized(this@TorEngineManager) {
+                    if (generation != runGeneration.get()) return@execute
+                    transportError = t.message
+                    transportStatus = "Startup failed"
+                    handleTorRuntimeFailure(t.message ?: "Tor failed to start")
+                }
+            }
+        }
+    }
+
+    private fun streamTorOutput(proc: Process, allocatedPort: Int, generation: Int) {
+        var lastErrorLine: String? = null
+        try {
+            BufferedReader(InputStreamReader(proc.inputStream)).use { reader ->
+                var line = reader.readLine()
+                while (line != null) {
+                    if (generation != runGeneration.get()) break
+                    Log.d(TAG, "[tor] $line")
+                    handleTorLogLine(line, allocatedPort, generation)
+                    if (line.contains("[err]") || line.contains("[warn]")) {
+                        lastErrorLine = line.substringAfter("] ").trim()
+                    }
+                    line = reader.readLine()
+                }
             }
         } catch (t: Throwable) {
-            runCatching { TorService.getTorrc(context).delete() }
-            transportError = t.message
-            transportStatus = "Transport error"
-            setState(State.ERROR, t.message ?: "Tor failed to start")
-            starting.set(false)
+            Log.w(TAG, "Tor output stream closed: ${t.message}")
+        }
+
+        val exitCode = runCatching { proc.waitFor() }.getOrDefault(-1)
+        runCatching { torrcFile.delete() }
+
+        synchronized(this@TorEngineManager) {
+            if (generation != runGeneration.get()) return
+            torProcess = null
+            if (state == State.STOPPING || state == State.STOPPED) return
+            val detail = lastErrorLine ?: "Tor process exited with code $exitCode"
+            handleTorRuntimeFailure(detail)
+        }
+    }
+
+    private fun handleTorLogLine(line: String, allocatedPort: Int, generation: Int) {
+        val bootMatch = BOOTSTRAP_REGEX.find(line)
+        if (bootMatch != null) {
+            val pct = bootMatch.groupValues[1].toIntOrNull()?.coerceIn(0, 100) ?: return
+            val summary = bootMatch.groupValues[3].trim()
+            var promote = false
+            synchronized(this) {
+                if (generation != runGeneration.get()) return
+                bootstrap = pct
+                bootstrapSummary = summary
+                transportStatus = "Bootstrapping $pct% ($activeTransport)"
+                if (pct >= 100 && state != State.CONNECTED && state != State.VERIFYING_SOCKS) {
+                    promote = true
+                    setState(State.VERIFYING_SOCKS)
+                } else {
+                    callback?.invoke(snapshot())
+                }
+            }
+            if (promote) {
+                runCatching { torrcFile.delete() }
+                verifySocksAndPromote(allocatedPort, generation)
+            }
+            return
+        }
+
+        if (line.contains("[err]") || line.contains("Managed proxy") || line.contains("Pluggable Transport")) {
+            val msg = line.substringAfter("] ").trim().take(220)
+            synchronized(this) {
+                if (generation != runGeneration.get()) return
+                if (line.contains("[err]") || line.contains("failed", ignoreCase = true) || line.contains("terminated", ignoreCase = true)) {
+                    transportError = msg
+                    transportStatus = "Transport warning ($activeTransport)"
+                    callback?.invoke(snapshot())
+                }
+            }
         }
     }
 
     @Synchronized
     fun stop() {
-        if (state == State.STOPPED && !failClosed) return
+        if (state == State.STOPPED && !failClosed && torProcess == null) return
         setState(State.STOPPING)
-        stopDaemonOnly()
+        stopProcessOnly()
         failClosed = false
         Settings.torFailClosedActive = false
         bootstrap = 0
@@ -330,28 +397,28 @@ internal class TorEngineManager private constructor(private val context: Context
     }
 
     @Synchronized
-    private fun stopDaemonOnly() {
-        mainHandler.removeCallbacks(bootstrapPoll)
+    private fun stopProcessOnly() {
+        runGeneration.incrementAndGet()
+        mainHandler.removeCallbacks(autoFallbackWatchdog)
         mainHandler.removeCallbacks(healthWatchdog)
-        runCatching { service?.torControlConnection?.shutdownTor("SHUTDOWN") }
-        if (bound) runCatching { context.unbindService(connection) }
-        bound = false
-        service = null
+        val proc = torProcess
+        torProcess = null
+        if (proc != null) {
+            runCatching { proc.destroy() }
+            runCatching {
+                if (isProcessAlive(proc)) proc.destroyForcibly()
+            }
+        }
         socksPort = null
+        pendingSocksPort = null
         Settings.torSocksPort = 0
         starting.set(false)
-        runCatching { TorService.getTorrc(context).delete() }
-        if (receiverRegistered) runCatching { localBroadcasts.unregisterReceiver(receiver) }
-        receiverRegistered = false
+        runCatching { torrcFile.delete() }
     }
 
-    /**
-     * Triggers an immediate Fail-Closed transition (used both by the watchdog when Tor drops and
-     * by device acceptance tests to prove fail-closed enforcement).
-     */
     @Synchronized
     fun triggerFailClosed(reason: String) {
-        mainHandler.removeCallbacks(bootstrapPoll)
+        mainHandler.removeCallbacks(autoFallbackWatchdog)
         mainHandler.removeCallbacks(healthWatchdog)
         socksPort = null
         Settings.torSocksPort = 0
@@ -372,7 +439,7 @@ internal class TorEngineManager private constructor(private val context: Context
 
     private fun handleTorRuntimeFailure(reason: String) {
         synchronized(this) {
-            if (state == State.CONNECTED || Settings.torModeEnabled && failClosed) {
+            if (state == State.CONNECTED || (Settings.torModeEnabled && failClosed)) {
                 triggerFailClosed(reason)
             } else {
                 transportError = reason
@@ -382,10 +449,11 @@ internal class TorEngineManager private constructor(private val context: Context
         }
     }
 
-    private fun verifySocksAndPromote(reportedPort: Int) {
+    private fun verifySocksAndPromote(reportedPort: Int, generation: Int) {
         ioExecutor.execute {
             var verified = false
-            for (attempt in 1..5) {
+            for (attempt in 1..8) {
+                if (generation != runGeneration.get()) return@execute
                 if (probeSocks5Loopback(reportedPort, PROBE_TIMEOUT_MS)) {
                     verified = true
                     break
@@ -393,7 +461,7 @@ internal class TorEngineManager private constructor(private val context: Context
                 Thread.sleep(250L)
             }
             synchronized(this@TorEngineManager) {
-                if (state != State.VERIFYING_SOCKS) return@execute
+                if (generation != runGeneration.get() || state != State.VERIFYING_SOCKS) return@execute
                 if (!verified) {
                     handleTorRuntimeFailure("Tor SOCKS5 handshake verification failed on 127.0.0.1:$reportedPort")
                     return@execute
@@ -416,52 +484,6 @@ internal class TorEngineManager private constructor(private val context: Context
                         runCatching { listener.onTorRecovered("127.0.0.1", reportedPort) }
                     }
                 }
-            }
-        }
-    }
-
-    private fun pollBootstrapPhase() {
-        val svc = synchronized(this) { service } ?: return
-        val phaseText = runCatching { svc.getInfo("status/bootstrap-phase") ?: "" }.getOrDefault("")
-        val progress = Regex("PROGRESS=([0-9]{1,3})").find(phaseText)?.groupValues?.get(1)?.toIntOrNull()
-        val summary = Regex("SUMMARY=\"([^\"]+)\"").find(phaseText)?.groupValues?.get(1)
-        val warning = Regex("WARNING=\"([^\"]+)\"").find(phaseText)?.groupValues?.get(1)
-
-        var triggerAutoSnowflake = false
-        synchronized(this) {
-            if (state != State.BOOTSTRAPPING && state != State.RECOVERING) return
-            if (progress != null) bootstrap = progress.coerceIn(0, 100)
-            if (!summary.isNullOrBlank()) bootstrapSummary = summary
-            if (!warning.isNullOrBlank()) {
-                transportError = warning
-                transportStatus = "Warning ($activeTransport): $warning"
-            } else {
-                transportStatus = "Bootstrapping $bootstrap% ($activeTransport)"
-            }
-
-            // In Automatic mode, if direct Tor stalls below 50% for >45s and Snowflake binary is
-            // packaged, automatically retry using Snowflake pluggable transport.
-            val elapsed = System.currentTimeMillis() - bootstrapStartedAtMs
-            if (
-                transportMode == TorTransportConfig.MODE_AUTOMATIC &&
-                activeTransport == "direct" &&
-                !autoFallbackAttempted &&
-                elapsed > AUTO_SNOWFLAKE_FALLBACK_MS &&
-                bootstrap < 50 &&
-                capabilities().snowflakeAvailable
-            ) {
-                autoFallbackAttempted = true
-                triggerAutoSnowflake = true
-            }
-            callback?.invoke(snapshot())
-        }
-
-        if (triggerAutoSnowflake) {
-            Log.i(TAG, "Automatic mode: direct Tor stalled, switching to Snowflake transport")
-            synchronized(this) {
-                stopDaemonOnly()
-                starting.set(true)
-                startInternal(lastBridges, forceSnowflakeFallback = true)
             }
         }
     }
@@ -489,14 +511,11 @@ internal class TorEngineManager private constructor(private val context: Context
     private fun setState(next: State, message: String? = null) {
         state = next
         if (message != null) error = message
-        if (next == State.BOOTSTRAPPING || next == State.RECOVERING) {
-            mainHandler.removeCallbacks(bootstrapPoll)
-            mainHandler.postDelayed(bootstrapPoll, BOOTSTRAP_POLL_MS)
-        } else {
-            mainHandler.removeCallbacks(bootstrapPoll)
-        }
         if (next != State.CONNECTED) {
             mainHandler.removeCallbacks(healthWatchdog)
+        }
+        if (next != State.BOOTSTRAPPING && next != State.RECOVERING) {
+            mainHandler.removeCallbacks(autoFallbackWatchdog)
         }
         if (next == State.STOPPED || next == State.ERROR || next == State.FAIL_CLOSED) {
             starting.set(false)
@@ -506,17 +525,27 @@ internal class TorEngineManager private constructor(private val context: Context
 
     companion object {
         private const val TAG = "A/TorEngineManager"
-        private const val BOOTSTRAP_POLL_MS = 1000L
         private const val WATCHDOG_INTERVAL_MS = 3000L
         private const val PROBE_TIMEOUT_MS = 2000
         private const val MAX_PROBE_FAILURES = 2
         private const val AUTO_SNOWFLAKE_FALLBACK_MS = 45_000L
+        private val BOOTSTRAP_REGEX = Regex("Bootstrapped\\s+([0-9]{1,3})%\\s*\\(([^)]*)\\):\\s*(.+)")
 
         @Volatile
         private var instance: TorEngineManager? = null
 
         fun get(context: Context): TorEngineManager = instance ?: synchronized(this) {
             instance ?: TorEngineManager(context.applicationContext).also { instance = it }
+        }
+
+        private fun allocateLoopbackPort(): Int =
+            ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
+
+        private fun isProcessAlive(proc: Process): Boolean = try {
+            proc.exitValue()
+            false
+        } catch (_: IllegalThreadStateException) {
+            true
         }
 
         /**

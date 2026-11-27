@@ -1,51 +1,108 @@
 import 'package:dartx/dartx.dart';
 import 'package:flutter/material.dart';
 import 'package:gap/gap.dart';
+import 'package:go_router/go_router.dart';
 import 'package:hiddify/core/app_info/app_info_provider.dart';
 import 'package:hiddify/core/localization/translations.dart';
 import 'package:hiddify/core/router/bottom_sheets/bottom_sheets_notifier.dart';
+import 'package:hiddify/features/connection/model/connection_status.dart';
+import 'package:hiddify/features/connection/notifier/connection_notifier.dart';
 import 'package:hiddify/features/home/widget/connection_button.dart';
 import 'package:hiddify/features/home/widget/local_proxy_hint.dart';
 import 'package:hiddify/features/profile/notifier/active_profile_notifier.dart';
 import 'package:hiddify/features/profile/widget/profile_tile.dart';
-import 'package:go_router/go_router.dart';
-import 'package:hiddify/features/tor/model/tor_mode_state.dart';
-import 'package:hiddify/features/tor/notifier/tor_mode_notifier.dart';
 import 'package:hiddify/features/proxy/active/active_proxy_card.dart';
 import 'package:hiddify/features/proxy/active/active_proxy_delay_indicator.dart';
-import 'package:hiddify/gen/assets.gen.dart';
+import 'package:hiddify/features/stats/notifier/stats_notifier.dart';
+import 'package:hiddify/features/tor/model/tor_mode_state.dart';
+import 'package:hiddify/features/tor/notifier/tor_mode_notifier.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:sliver_tools/sliver_tools.dart';
 
 class HomePage extends HookConsumerWidget {
   const HomePage({super.key});
 
+  static String _formatBytes(int bytes) {
+    if (bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var value = bytes.toDouble();
+    var idx = 0;
+    while (value >= 1024 && idx < units.length - 1) {
+      value /= 1024;
+      idx++;
+    }
+    return '${value.toStringAsFixed(idx == 0 ? 0 : 1)} ${units[idx]}';
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     final t = ref.watch(translationsProvider).requireValue;
-    // final hasAnyProfile = ref.watch(hasAnyProfileProvider);
     final activeProfile = ref.watch(activeProfileProvider);
     final torState = ref.watch(torModeNotifierProvider);
+    final connStatus = ref.watch(connectionNotifierProvider).valueOrNull;
+    final stats = ref.watch(statsNotifierProvider).valueOrNull;
+
+    final isConnected = torState.isTorModeSelected
+        ? (torState.phase == TorVpnPhase.connected && torState.vpnActive)
+        : (connStatus is Connected);
+    final isFailClosed = torState.isTorModeSelected && torState.phase == TorVpnPhase.failClosed;
+
+    final heroTitle = isFailClosed
+        ? 'Fail-Closed Active'
+        : (isConnected
+            ? (torState.isTorModeSelected ? 'Connected via Tor' : 'Connected')
+            : (torState.isTorModeSelected && torState.isBusy
+                ? 'Tor ${torState.snapshot.bootstrap}%'
+                : 'Not Connected'));
+
+    final heroSubtitle = isFailClosed
+        ? 'Tor stopped · Device traffic blocked safely'
+        : (torState.isTorModeSelected
+            ? (torState.lastError ??
+                torState.statusMessage ??
+                'Standalone Tor · ${torState.transportMode.label} · DNS over Tor')
+            : 'Tap the button below to establish a secure connection');
 
     return Scaffold(
       appBar: AppBar(
-        // leading: (RootScaffold.stateKey.currentState?.hasDrawer ?? false) && showDrawerButton(context)
-        //     ? DrawerButton(
-        //         onPressed: () {
-        //           RootScaffold.stateKey.currentState?.openDrawer();
-        //         },
-        //       )
-        //     : null,
         title: Row(
           children: [
-            Assets.images.logo.svg(height: 24),
-            const Gap(8),
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF7C3AED), Color(0xFFA855F7)],
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF8B5CF6).withValues(alpha: 0.45),
+                    blurRadius: 12,
+                  ),
+                ],
+              ),
+              child: const Icon(Icons.visibility_rounded, size: 18, color: Colors.white),
+            ),
+            const Gap(10),
             Text.rich(
               TextSpan(
                 children: [
-                  TextSpan(text: t.common.appTitle),
-                  const TextSpan(text: " "),
+                  const TextSpan(
+                    text: 'Vision ',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 19),
+                  ),
+                  const TextSpan(
+                    text: 'VPN',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 19,
+                      color: Color(0xFFA855F7),
+                    ),
+                  ),
+                  const TextSpan(text: ' '),
                   const WidgetSpan(child: AppVersionLabel(), alignment: PlaceholderAlignment.middle),
                 ],
               ),
@@ -53,50 +110,33 @@ class HomePage extends HookConsumerWidget {
           ],
         ),
         actions: [
-          // IconButton(
-          //     onPressed: () => const QuickSettingsRoute().push(context),
-          //     icon: const Icon(FluentIcons.options_24_filled),
-          //     material: (context, platform) => MaterialIconButtonData(
-          //           tooltip: t.config.quickSettings,
-          //         )),
-          // IconButton(
-          //     onPressed: () => const AddProfileRoute().push(context),
-          //     icon: const Icon(FluentIcons.add_circle_24_filled),
-          //     material: (context, platform) => MaterialIconButtonData(
-          //           tooltip: t.profile.add.buttonText,
-          //         )),
           Semantics(
             key: const ValueKey("profile_add_button"),
             label: t.pages.profiles.add,
             child: IconButton(
-              icon: Icon(Icons.add_rounded, color: theme.colorScheme.primary),
+              icon: const Icon(Icons.add_circle_outline_rounded, color: Color(0xFFA855F7)),
               onPressed: () => ref.read(bottomSheetsNotifierProvider.notifier).showAddProfile(),
             ),
           ),
           const Gap(8),
         ],
       ),
-      // The sky and the map are drawn once into their own layer: a ripple or a label changing on
-      // the page no longer redraws the whole map image under it.
       body: Stack(
         fit: StackFit.expand,
         children: [
           RepaintBoundary(
             child: DecoratedBox(
               decoration: BoxDecoration(
-                // A sky behind the connect button, as at an eclipse: in dark mode a touch lighter round
-                // the button, fading to the theme's own dark; in light mode brightest there, a touch
-                // darker towards the edges. Both barely there, centred on where the button sits.
-                gradient: theme.brightness == Brightness.dark
-                    ? RadialGradient(
-                        center: const Alignment(0, -.15),
-                        radius: .85,
+                gradient: isDark
+                    ? const RadialGradient(
+                        center: Alignment(0, -0.35),
+                        radius: 1.05,
                         colors: [
-                          Colors.white.withValues(alpha: .045),
-                          Colors.white.withValues(alpha: .015),
-                          Colors.white.withValues(alpha: 0),
+                          Color(0xFF230E52),
+                          Color(0xFF11072B),
+                          Color(0xFF090518),
                         ],
-                        stops: const [0, .45, 1],
+                        stops: [0.0, 0.45, 1.0],
                       )
                     : RadialGradient(
                         center: const Alignment(0, -.15),
@@ -109,15 +149,13 @@ class HomePage extends HookConsumerWidget {
                         stops: const [0, .5, 1],
                       ),
                 image: DecorationImage(
-                  image: const AssetImage('assets/images/world_map.png'), // Replace with your image path
+                  image: const AssetImage('assets/images/world_map.png'),
                   fit: BoxFit.cover,
-                  opacity: 0.09,
-                  colorFilter: theme.brightness == Brightness.dark
-                      ? ColorFilter.mode(Colors.white.withValues(alpha: .15), BlendMode.srcIn) //
-                      : ColorFilter.mode(
-                          Colors.grey.withValues(alpha: 1),
-                          BlendMode.srcATop,
-                        ), // Apply white tint in dark mode
+                  opacity: isDark ? 0.12 : 0.08,
+                  colorFilter: ColorFilter.mode(
+                    isDark ? const Color(0xFFA855F7).withValues(alpha: 0.35) : Colors.grey,
+                    BlendMode.srcATop,
+                  ),
                 ),
               ),
             ),
@@ -127,23 +165,109 @@ class HomePage extends HookConsumerWidget {
             children: [
               Center(
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(
-                    maxWidth: 600, // Set the maximum width here
-                  ),
-                  // The page does not move under the finger: no bounce (iOS) or stretch (Android) when it
-                  // fits the screen. It still scrolls, without them, when it does not (a small screen or a
-                  // large font).
+                  constraints: const BoxConstraints(maxWidth: 600),
                   child: ScrollConfiguration(
                     behavior: ScrollConfiguration.of(context).copyWith(overscroll: false),
                     child: CustomScrollView(
                       physics: const ClampingScrollPhysics(),
                       slivers: [
-                        // switch (activeProfile) {
-                        // AsyncData(value: final profile?) =>
                         MultiSliver(
                           children: [
+                            // 1. Hero Connection Card (inspired by Vision VPN cosmic design)
                             Padding(
-                              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                              padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(24),
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: isDark
+                                        ? const [Color(0xE61D0D45), Color(0xE6110829)]
+                                        : [theme.colorScheme.surface, theme.colorScheme.surfaceContainerLow],
+                                  ),
+                                  border: Border.all(
+                                    color: isFailClosed
+                                        ? theme.colorScheme.error.withValues(alpha: 0.7)
+                                        : (isConnected
+                                            ? const Color(0xFF2DD4BF).withValues(alpha: 0.6)
+                                            : const Color(0xFF8B5CF6).withValues(alpha: 0.35)),
+                                  ),
+                                  boxShadow: isDark
+                                      ? [
+                                          BoxShadow(
+                                            color: const Color(0xFF7C3AED).withValues(alpha: 0.22),
+                                            blurRadius: 24,
+                                            offset: const Offset(0, 8),
+                                          ),
+                                        ]
+                                      : null,
+                                ),
+                                padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
+                                child: Column(
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.all(8),
+                                          decoration: BoxDecoration(
+                                            color: (isFailClosed
+                                                    ? theme.colorScheme.error
+                                                    : (isConnected
+                                                        ? const Color(0xFF14B8A6)
+                                                        : const Color(0xFF7C3AED)))
+                                                .withValues(alpha: 0.22),
+                                            borderRadius: BorderRadius.circular(12),
+                                          ),
+                                          child: Icon(
+                                            isFailClosed
+                                                ? Icons.gpp_bad_rounded
+                                                : (torState.isTorModeSelected
+                                                    ? Icons.shield_moon_rounded
+                                                    : Icons.verified_user_rounded),
+                                            color: isFailClosed
+                                                ? theme.colorScheme.error
+                                                : (isConnected
+                                                    ? const Color(0xFF2DD4BF)
+                                                    : const Color(0xFFA855F7)),
+                                            size: 20,
+                                          ),
+                                        ),
+                                        const Gap(12),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                heroTitle,
+                                                style: theme.textTheme.titleMedium?.copyWith(
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                              Text(
+                                                heroSubtitle,
+                                                maxLines: 2,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: theme.textTheme.bodySmall?.copyWith(
+                                                  color: theme.colorScheme.onSurfaceVariant,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const Gap(10),
+                                    const ConnectionButton(),
+                                    const ActiveProxyDelayIndicator(),
+                                  ],
+                                ),
+                              ),
+                            ),
+
+                            // 2. Independent Connection Mode Switcher (Hiddify | Tor)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                               child: SegmentedButton<VisionConnectionMode>(
                                 segments: const [
                                   ButtonSegment<VisionConnectionMode>(
@@ -165,71 +289,212 @@ class HomePage extends HookConsumerWidget {
                                         .setConnectionMode(selection.first),
                               ),
                             ),
+
+                            // 3. Server Location / Active Profile OR Live Tor Transport Card
                             if (torState.isTorModeSelected)
                               Padding(
                                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                                 child: Card(
                                   child: ListTile(
                                     leading: Icon(
-                                      torState.phase == TorVpnPhase.failClosed
-                                          ? Icons.gpp_bad_rounded
-                                          : Icons.shield_moon_rounded,
-                                      color: torState.phase == TorVpnPhase.failClosed
-                                          ? theme.colorScheme.error
-                                          : theme.colorScheme.primary,
+                                      isFailClosed ? Icons.gpp_bad_rounded : Icons.shield_moon_rounded,
+                                      color: isFailClosed ? theme.colorScheme.error : const Color(0xFFA855F7),
                                     ),
                                     title: Text(
-                                      torState.phase == TorVpnPhase.failClosed
+                                      isFailClosed
                                           ? 'Tor Fail-Closed · Traffic Blocked'
-                                          : 'Tor Mode · ${torState.transportMode.label} (${torState.snapshot.bootstrap}%)',
+                                          : 'Tor · ${torState.transportMode.label} (${torState.snapshot.bootstrap}%)',
+                                      style: const TextStyle(fontWeight: FontWeight.w600),
                                     ),
                                     subtitle: Text(
                                       torState.lastError ??
                                           torState.statusMessage ??
-                                          'TCP over Tor · DNS over Tor · UDP blocked',
+                                          'Tap to configure Snowflake, obfs4 & Custom Bridges',
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
                                     ),
-                                    trailing: const Icon(Icons.tune_rounded),
+                                    trailing: const Icon(Icons.tune_rounded, color: Color(0xFFA855F7)),
                                     onTap: () => context.pushNamed('tor'),
                                   ),
                                 ),
                               )
                             else
-                            switch (activeProfile) {
-                              AsyncData(value: final profile?) => ProfileTile(
-                                profile: profile,
-                                isMain: true,
-                                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              ),
-                              _ => const Text(""),
-                            },
-                            const SliverFillRemaining(
-                              hasScrollBody: false,
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              switch (activeProfile) {
+                                AsyncData(value: final profile?) => ProfileTile(
+                                  profile: profile,
+                                  isMain: true,
+                                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                                ),
+                                _ => const SizedBox.shrink(),
+                              },
+
+                            // 4. Two-Column Quick Cards (Protocol/Transport & Quick Tor Switch)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                              child: Row(
                                 children: [
                                   Expanded(
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [ConnectionButton(), ActiveProxyDelayIndicator()],
+                                    child: Card(
+                                      margin: EdgeInsets.zero,
+                                      child: InkWell(
+                                        borderRadius: BorderRadius.circular(18),
+                                        onTap: () => context.pushNamed('tor'),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(14),
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Row(
+                                                children: [
+                                                  const Icon(Icons.layers_rounded, size: 16, color: Color(0xFFA855F7)),
+                                                  const Gap(6),
+                                                  Text(
+                                                    torState.isTorModeSelected ? 'Transport' : 'Engine',
+                                                    style: theme.textTheme.labelMedium?.copyWith(
+                                                      color: theme.colorScheme.onSurfaceVariant,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              const Gap(6),
+                                              Text(
+                                                torState.isTorModeSelected
+                                                    ? torState.transportMode.label
+                                                    : 'Hiddify Core',
+                                                style: theme.textTheme.titleSmall?.copyWith(
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
                                     ),
                                   ),
-                                  ActiveProxyFooter(),
-                                  Gap(32),
+                                  const Gap(10),
+                                  Expanded(
+                                    child: Card(
+                                      margin: EdgeInsets.zero,
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                        child: Row(
+                                          children: [
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    'Tor Shield',
+                                                    style: theme.textTheme.labelMedium?.copyWith(
+                                                      color: theme.colorScheme.onSurfaceVariant,
+                                                    ),
+                                                  ),
+                                                  Text(
+                                                    torState.isTorModeSelected ? 'Active' : 'Off',
+                                                    style: theme.textTheme.titleSmall?.copyWith(
+                                                      fontWeight: FontWeight.bold,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                            Switch(
+                                              value: torState.isTorModeSelected,
+                                              activeColor: Colors.white,
+                                              activeTrackColor: const Color(0xFF7C3AED),
+                                              onChanged: torState.isBusy
+                                                  ? null
+                                                  : (val) => ref
+                                                      .read(torModeNotifierProvider.notifier)
+                                                      .setConnectionMode(
+                                                        val ? VisionConnectionMode.tor : VisionConnectionMode.normal,
+                                                      ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
                                 ],
                               ),
                             ),
+
+                            // 5. Traffic Usage Card (Download / Upload)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 6, 16, 12),
+                              child: Card(
+                                margin: EdgeInsets.zero,
+                                child: Padding(
+                                  padding: const EdgeInsets.all(14),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          const Icon(Icons.bar_chart_rounded, size: 18, color: Color(0xFFA855F7)),
+                                          const Gap(6),
+                                          Text(
+                                            'Traffic Usage',
+                                            style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+                                          ),
+                                        ],
+                                      ),
+                                      const Gap(10),
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: Column(
+                                              children: [
+                                                const Icon(Icons.arrow_downward_rounded, size: 16, color: Color(0xFFA855F7)),
+                                                const Gap(2),
+                                                Text(
+                                                  _formatBytes(stats?.downlinkTotal ?? 0),
+                                                  style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+                                                ),
+                                                Text(
+                                                  'Download · ${_formatBytes(stats?.downlink ?? 0)}/s',
+                                                  style: theme.textTheme.labelSmall?.copyWith(
+                                                    color: theme.colorScheme.onSurfaceVariant,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          Container(
+                                            width: 1,
+                                            height: 36,
+                                            color: const Color(0x448B5CF6),
+                                          ),
+                                          Expanded(
+                                            child: Column(
+                                              children: [
+                                                const Icon(Icons.arrow_upward_rounded, size: 16, color: Color(0xFF38BDF8)),
+                                                const Gap(2),
+                                                Text(
+                                                  _formatBytes(stats?.uplinkTotal ?? 0),
+                                                  style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+                                                ),
+                                                Text(
+                                                  'Upload · ${_formatBytes(stats?.uplink ?? 0)}/s',
+                                                  style: theme.textTheme.labelSmall?.copyWith(
+                                                    color: theme.colorScheme.onSurfaceVariant,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+
+                            const ActiveProxyFooter(),
+                            const Gap(64),
                           ],
                         ),
-                        // AsyncData() => switch (hasAnyProfile) {
-                        //     AsyncData(value: true) => const EmptyActiveProfileHomeBody(),
-                        //     _ => const EmptyProfilesHomeBody(),
-                        //   },
-                        // AsyncError(:final error) => SliverErrorBodyPlaceholder(t.presentShortError(error)),
-                        // _ => const SliverToBoxAdapter(),
-                        // },
                       ],
                     ),
                   ),
@@ -242,10 +507,8 @@ class HomePage extends HookConsumerWidget {
                   bottom: 0,
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
-                    // tabs of either height stand on the bottom edge
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      // in proxy mode, a smaller tab beside this one on how to point apps at the proxy
                       const Flexible(child: LocalProxyHint()),
                       Material(
                         color: theme.colorScheme.primaryContainer,
@@ -258,16 +521,20 @@ class HomePage extends HookConsumerWidget {
                             topLeft: Radius.circular(16),
                             topRight: Radius.circular(16),
                           ),
-                          onTap: () => ref.read(bottomSheetsNotifierProvider.notifier).showQuickSettings(),
-                          child: Container(
-                            height: 32,
-                            padding: const EdgeInsetsDirectional.only(start: 16, end: 8),
+                          onTap: () => ref.read(bottomSheetsNotifierProvider.notifier).showProxies(),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Text(t.pages.home.quickSettings),
+                                Icon(Icons.keyboard_arrow_up_rounded, color: theme.colorScheme.onPrimaryContainer),
                                 const Gap(4),
-                                const Icon(Icons.arrow_drop_up_rounded, size: 16),
+                                Text(
+                                  t.pages.proxies.title.capitalize(),
+                                  style: theme.textTheme.labelLarge?.copyWith(
+                                    color: theme.colorScheme.onPrimaryContainer,
+                                  ),
+                                ),
                               ],
                             ),
                           ),
@@ -279,33 +546,6 @@ class HomePage extends HookConsumerWidget {
             ],
           ),
         ],
-      ),
-    );
-  }
-}
-
-class AppVersionLabel extends HookConsumerWidget {
-  const AppVersionLabel({super.key});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final t = ref.watch(translationsProvider).requireValue;
-    final theme = Theme.of(context);
-
-    final version = ref.watch(appInfoProvider).requireValue.presentVersion;
-    if (version.isBlank) return const SizedBox();
-
-    return Semantics(
-      label: t.common.version,
-      button: false,
-      child: Container(
-        decoration: BoxDecoration(color: theme.colorScheme.secondaryContainer, borderRadius: BorderRadius.circular(4)),
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-        child: Text(
-          version,
-          textDirection: TextDirection.ltr,
-          style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSecondaryContainer),
-        ),
       ),
     );
   }
