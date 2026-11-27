@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds official Tor Project Pluggable Transport binaries (lyrebird/obfs4 and snowflake)
-# as Android PIE executables packaged inside android/app/src/main/jniLibs/<abi>/.
+# as Android statically linked ELF executables packaged inside android/app/src/main/jniLibs/<abi>/.
 #
 # Android extracts lib*.so files from jniLibs/<abi>/ into applicationInfo.nativeLibraryDir
 # with executable permissions (+x), allowing TorService to execute them as Managed Transports
@@ -40,18 +40,32 @@ build_for_abi() {
   local out_dir="${JNILIBS_DIR}/${abi}"
   mkdir -p "${out_dir}"
 
-  echo "==> Building liblyrebird.so (obfs4) for ${abi} (GOOS=linux GOARCH=${goarch} ${goarm:+GOARM=$goarm})..."
+  echo "==> Building liblyrebird.so (obfs4) for ${abi} (GOOS=linux GOARCH=${goarch}${goarm:+ GOARM=${goarm}})..."
   (
     cd "${BUILD_TMP}/lyrebird"
-    CGO_ENABLED=0 GOOS=linux GOARCH="${goarch}" ${goarm:+GOARM="${goarm}"} \
-      go build -trimpath -ldflags="-s -w" -o "${out_dir}/liblyrebird.so" ./cmd/lyrebird
+    export CGO_ENABLED=0
+    export GOOS=linux
+    export GOARCH="${goarch}"
+    if [[ -n "${goarm}" ]]; then
+      export GOARM="${goarm}"
+    else
+      unset GOARM || true
+    fi
+    go build -trimpath -ldflags="-s -w" -o "${out_dir}/liblyrebird.so" ./cmd/lyrebird
   )
 
-  echo "==> Building libsnowflake.so (Snowflake) for ${abi} (GOOS=linux GOARCH=${goarch} ${goarm:+GOARM=$goarm})..."
+  echo "==> Building libsnowflake.so (Snowflake) for ${abi} (GOOS=linux GOARCH=${goarch}${goarm:+ GOARM=${goarm}})..."
   (
     cd "${BUILD_TMP}/snowflake/client"
-    CGO_ENABLED=0 GOOS=linux GOARCH="${goarch}" ${goarm:+GOARM="${goarm}"} \
-      go build -trimpath -ldflags="-s -w" -o "${out_dir}/libsnowflake.so" .
+    export CGO_ENABLED=0
+    export GOOS=linux
+    export GOARCH="${goarch}"
+    if [[ -n "${goarm}" ]]; then
+      export GOARM="${goarm}"
+    else
+      unset GOARM || true
+    fi
+    go build -trimpath -ldflags="-s -w" -o "${out_dir}/libsnowflake.so" .
   )
 
   chmod 0755 "${out_dir}/liblyrebird.so" "${out_dir}/libsnowflake.so"
