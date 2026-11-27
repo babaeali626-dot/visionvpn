@@ -24,7 +24,6 @@ import 'package:hiddify/features/proxy/active/active_proxy_notifier.dart';
 import 'package:hiddify/features/proxy/model/connection_health.dart';
 import 'package:hiddify/features/proxy/model/proxy_entity.dart';
 import 'package:hiddify/features/stats/notifier/stats_notifier.dart';
-import 'package:hiddify/features/tor/model/tor_mode_state.dart';
 import 'package:hiddify/features/tor/notifier/tor_mode_notifier.dart';
 import 'package:hiddify/gen/assets.gen.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';

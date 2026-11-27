@@ -39,6 +39,7 @@ class HomePage extends HookConsumerWidget {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final t = ref.watch(translationsProvider).requireValue;
+    final appVersion = ref.watch(appInfoProvider).valueOrNull?.presentVersion;
     final activeProfile = ref.watch(activeProfileProvider);
     final torState = ref.watch(torModeNotifierProvider);
     final connStatus = ref.watch(connectionNotifierProvider).valueOrNull;
@@ -103,7 +104,10 @@ class HomePage extends HookConsumerWidget {
                     ),
                   ),
                   const TextSpan(text: ' '),
-                  const WidgetSpan(child: AppVersionLabel(), alignment: PlaceholderAlignment.middle),
+                  WidgetSpan(
+                    child: Text(appVersion ?? '', style: theme.textTheme.labelSmall),
+                    alignment: PlaceholderAlignment.middle,
+                  ),
                 ],
               ),
             ),
@@ -400,7 +404,7 @@ class HomePage extends HookConsumerWidget {
                                             ),
                                             Switch(
                                               value: torState.isTorModeSelected,
-                                              activeColor: Colors.white,
+                                              activeThumbColor: Colors.white,
                                               activeTrackColor: const Color(0xFF7C3AED),
                                               onChanged: torState.isBusy
                                                   ? null
@@ -448,11 +452,11 @@ class HomePage extends HookConsumerWidget {
                                                 const Icon(Icons.arrow_downward_rounded, size: 16, color: Color(0xFFA855F7)),
                                                 const Gap(2),
                                                 Text(
-                                                  _formatBytes(stats?.downlinkTotal ?? 0),
+                                                  _formatBytes(stats?.downlinkTotal.toInt() ?? 0),
                                                   style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
                                                 ),
                                                 Text(
-                                                  'Download · ${_formatBytes(stats?.downlink ?? 0)}/s',
+                                                  'Download · ${_formatBytes(stats?.downlink.toInt() ?? 0)}/s',
                                                   style: theme.textTheme.labelSmall?.copyWith(
                                                     color: theme.colorScheme.onSurfaceVariant,
                                                   ),
@@ -471,11 +475,11 @@ class HomePage extends HookConsumerWidget {
                                                 const Icon(Icons.arrow_upward_rounded, size: 16, color: Color(0xFF38BDF8)),
                                                 const Gap(2),
                                                 Text(
-                                                  _formatBytes(stats?.uplinkTotal ?? 0),
+                                                  _formatBytes(stats?.uplinkTotal.toInt() ?? 0),
                                                   style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
                                                 ),
                                                 Text(
-                                                  'Upload · ${_formatBytes(stats?.uplink ?? 0)}/s',
+                                                  'Upload · ${_formatBytes(stats?.uplink.toInt() ?? 0)}/s',
                                                   style: theme.textTheme.labelSmall?.copyWith(
                                                     color: theme.colorScheme.onSurfaceVariant,
                                                   ),
@@ -521,7 +525,7 @@ class HomePage extends HookConsumerWidget {
                             topLeft: Radius.circular(16),
                             topRight: Radius.circular(16),
                           ),
-                          onTap: () => ref.read(bottomSheetsNotifierProvider.notifier).showProxies(),
+                          onTap: () => context.pushNamed('proxies'),
                           child: Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
                             child: Row(
