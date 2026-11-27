@@ -1,0 +1,201 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:hiddify/core/logger/ring/log_ring.dart';
+import 'package:hiddify/core/model/region.dart';
+import 'package:hiddify/core/preferences/actions_at_closing.dart';
+import 'package:hiddify/core/utils/preferences_utils.dart';
+import 'package:hiddify/features/app_based_routing/model/per_app_proxy_mode.dart';
+import 'package:hiddify/features/profile/model/profile_sort_enum.dart';
+import 'package:hiddify/features/window/notifier/window_notifier.dart';
+import 'package:hiddify/utils/platform_utils.dart';
+import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:logging/logging.dart';
+
+bool _debugIntroPage = false;
+
+abstract class Preferences {
+  static final introCompleted = PreferencesNotifier.create(
+    "intro_completed",
+    false,
+    overrideValue: _debugIntroPage && kDebugMode ? false : null,
+  );
+
+  // Null means that auto selection has not been performed yet.
+  static final autoAppsSelectionRegion = PreferencesNotifier.create<Region?, String?>(
+    "auto_apps_selection_region",
+    null,
+    mapFrom: (value) => value == null || value.isEmpty ? null : Region.values.byName(value),
+    mapTo: (value) => value == null ? '' : value.name,
+  );
+
+  static final autoAppsSelectionLastUpdate = PreferencesNotifier.create<DateTime?, String?>(
+    "auto_apps_selection_last_update",
+    null,
+    mapFrom: (value) => value == null ? null : DateTime.tryParse(value),
+    mapTo: (value) => value?.toIso8601String(),
+  );
+
+  // Set when the user turns auto selection off by hand. Until then it comes on by itself when App-based routing
+  // is turned on.
+  static final autoAppsSelectionOffByUser = PreferencesNotifier.create<bool, bool>(
+    "auto_apps_selection_off_by_user",
+    false,
+  );
+
+  static final includeApps = PreferencesNotifier.create<List<String>, List<String>>(
+    "per_app_proxy_include_list",
+    <String>[],
+  );
+
+  static final excludeApps = PreferencesNotifier.create<List<String>, List<String>>(
+    "per_app_proxy_exclude_list",
+    <String>[],
+  );
+
+  static final windowMaximized = PreferencesNotifier.create<bool, bool>("window_maximized", false);
+
+  /// Whether the proxy list shows the sleeping proxies keep top leaves at rest: open at first, then as the
+  /// user left it.
+  static final showSleepingProxies = PreferencesNotifier.create<bool, bool>("show_sleeping_proxies", true);
+
+  /// The newest crash report the user was offered, by name, so each crash is offered once.
+  static final lastSeenCrashReport = PreferencesNotifier.create<String, String>("last_seen_crash_report", "");
+
+  /// The app version that last looked at the crash reports: a crash from an older version is dropped.
+  static final crashReportsVersion = PreferencesNotifier.create<String, String>("crash_reports_version", "");
+
+  static final windowPosition = PreferencesNotifier.create<Offset?, String?>(
+    "window_position",
+    null,
+    mapFrom: (value) {
+      if (value == null) return null;
+      final list = value.split(',').map((e) => double.tryParse(e)).toList();
+      return Offset(list[0]!, list[1]!);
+    },
+    mapTo: (value) {
+      if (value == null) return null;
+      return "${value.dx},${value.dy}";
+    },
+  );
+
+  static final windowSize = PreferencesNotifier.create<Size, String>(
+    "window_size",
+    defaultWindowSize,
+    mapFrom: (value) {
+      final list = value.split(',').map((e) => double.tryParse(e)).toList();
+      return Size(list[0]!, list[1]!);
+    },
+    mapTo: (value) => "${value.width},${value.height}",
+  );
+
+  static final silentStart = PreferencesNotifier.create<bool, bool>("silent_start", false);
+
+  static final disableMemoryLimit = PreferencesNotifier.create<bool, bool>(
+    "disable_memory_limit",
+    // only iOS needs the limit (the Network Extension is killed above its memory cap); elsewhere
+    // a Go limit makes the GC run all the time near it, and the connection lags (hiddify-app#2521)
+    !PlatformUtils.isIOS,
+  );
+
+  // iOS only: kept in step with the native side, which applies it (see VPNManager.setAlwaysOn).
+  static final alwaysOnVpn = PreferencesNotifier.create<bool, bool>("always_on_vpn", false);
+
+  static final perAppProxyEnabled = PreferencesNotifier.create<bool, bool>("per_app_proxy_enabled", false);
+
+  // Kept while App-based routing is off, for when it is turned on again.
+  static final perAppProxyMode = PreferencesNotifier.create<AppProxyMode, String>(
+    "per_app_proxy_mode",
+    AppProxyMode.exclude,
+    mapFrom: AppProxyMode.values.byName,
+    mapTo: (value) => value.name,
+  );
+
+  // The mode in use, or null while App-based routing is off.
+  static final perAppProxyModeInUse = Provider<AppProxyMode?>(
+    (ref) => ref.watch(perAppProxyEnabled) ? ref.watch(perAppProxyMode) : null,
+  );
+
+  static final markNewProfileActive = PreferencesNotifier.create<bool, bool>("mark_new_profile_active", true);
+
+  static final dynamicNotification = PreferencesNotifier.create<bool, bool>("dynamic_notification", true);
+
+  static final autoCheckIp = PreferencesNotifier.create<bool, bool>("auto_check_ip", true);
+
+  /// The beta channel: updates to pre-releases (a .dev tag, or one still a pre-release on GitHub)
+  /// too, not only to stable releases.
+  static final betaUpdates = PreferencesNotifier.create<bool, bool>("beta_updates", false);
+
+  /// The dev build (version+build) that last joined the beta channel on its own, so that a dev
+  /// build joins it once and the user can still leave it.
+  static final betaUpdatesJoinedBy = PreferencesNotifier.create<String, String>("beta_updates_joined_by", "");
+
+  /// Keeps the connect button still and stops the decorative loops, as the system's own reduce
+  /// motion setting does: less CPU, and so battery, on a laptop or an old phone.
+  static final reduceAnimations = PreferencesNotifier.create<bool, bool>("reduce_animations", false);
+
+  static final startedByUser = PreferencesNotifier.create<bool, bool>("started_by_user", false);
+
+  static final storeReviewedByUser = PreferencesNotifier.create<bool, bool>("store_reviewed_by_user", false);
+
+  /// When this install first ran past the intro, so the Telegram channel is offered only after a while of use.
+  static final firstUsedAt = PreferencesNotifier.create<DateTime?, String?>(
+    "first_used_at",
+    null,
+    mapFrom: (value) => value == null ? null : DateTime.tryParse(value),
+    mapTo: (value) => value?.toIso8601String(),
+  );
+
+  /// When the Telegram channel was last offered: it is offered again a month later.
+  static final telegramChannelOfferedAt = PreferencesNotifier.create<DateTime?, String?>(
+    "telegram_channel_offered_at",
+    null,
+    mapFrom: (value) => value == null ? null : DateTime.tryParse(value),
+    mapTo: (value) => value?.toIso8601String(),
+  );
+
+  static final actionAtClose = PreferencesNotifier.create<ActionsAtClosing, String>(
+    "action_at_close",
+    ActionsAtClosing.ask,
+    mapFrom: ActionsAtClosing.values.byName,
+    mapTo: (value) => value.name,
+  );
+
+  static final warpConsentGiven = PreferencesNotifier.create<bool, bool>("warp-consent-given", false);
+
+  static final psiphonConsentGiven = PreferencesNotifier.create<bool, bool>("psiphon-consent-given", false);
+
+  /// How many records the in-memory log ring keeps. Saved, so a size picked
+  /// once while chasing a bug is still there on the next run.
+  static final logBufferSize = PreferencesNotifier.create<int, int>("log-buffer-size", 1000);
+
+  /// The level filter on the logs page. Saved, so the page opens on the level
+  /// picked last time.
+  ///
+  /// Starts at warn: below that the page is mostly the app narrating itself,
+  /// which buries the lines somebody opened this page to find.
+  static final logFilterLevel = PreferencesNotifier.create<Level, String>(
+    "log-filter-level",
+    Level.WARNING,
+    mapFrom: (value) => Level.LEVELS.firstWhere((level) => level.name == value),
+    mapTo: (value) => value.name,
+  );
+
+  /// The category filter on the logs page, saved the same way. Null shows every
+  /// category.
+  static final logFilterCategory = PreferencesNotifier.create<LogCategory?, String?>(
+    "log-filter-category",
+    null,
+    mapFrom: (value) => value == null || value.isEmpty ? null : LogCategory.values.byName(value),
+    mapTo: (value) => value == null ? '' : value.name,
+  );
+
+  static final profilesSort = PreferencesNotifier.create<({ProfilesSort by, SortMode mode}), String>(
+    "profiles_sort",
+    (by: ProfilesSort.lastUpdate, mode: SortMode.descending),
+    mapFrom: (value) {
+      final parts = value.split(":");
+      return (by: ProfilesSort.values.byName(parts.first), mode: SortMode.values.byName(parts.last));
+    },
+    mapTo: (value) => "${value.by.name}:${value.mode.name}",
+  );
+}

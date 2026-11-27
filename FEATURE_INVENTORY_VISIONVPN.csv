@@ -1,0 +1,11 @@
+feature,baseline_location,baseline_status,visionvpn_status,notes
+VLESS/VMess/Trojan/Shadowsocks/Reality/Hysteria/Hysteria2/TUIC/WireGuard/SSH,Hiddify core + profile parsers,baseline source retained,retained but regression tests not run,Core submodule absent in uploaded ZIP
+Subscriptions and profile management,lib/features/profile,baseline source retained,retained,No changes to profile domain model
+VPN service and proxy mode,android/.../bg/VPNService.kt and BoxService.kt,baseline source retained,retained,No second VPN service created
+Routing and per-app routing,lib/features/route_rules + core,baseline source retained,retained but Tor route not connected,Core source missing
+Tor daemon,Android native integration,not present,implemented with Guardian TorService,Needs device build/test
+Tor SOCKS loopback,Android TorService,not present,implemented/configured,Port availability must be confirmed on device
+Tor profile,profile model,not present,partial UI only,Not persisted as independent profile yet
+Tor outbound,Core config generator,not present,not implemented,Requires hiddify-core source and integration tests
+Snowflake/obfs4/Meek,Android PT binaries,not present,not enabled,Requires compatible PT binaries
+Vision VPN branding,Android resources,not present,implemented,App ID preserved intentionally

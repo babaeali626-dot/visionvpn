@@ -1,9 +1,0 @@
-{
-  "rules": [
-    {
-      "network": ["udp"],
-      "action": "reject"
-    }
-  ],
-  "final": "vision-tor"
-}

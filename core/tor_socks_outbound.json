@@ -1,7 +1,0 @@
-{
-  "type": "socks",
-  "tag": "vision-tor",
-  "server": "127.0.0.1",
-  "server_port": 9050,
-  "version": "5"
-}

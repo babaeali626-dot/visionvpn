@@ -1,0 +1,137 @@
+name: VisionVPN Android CI & Release APK
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: visionvpn-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-ci-and-apk:
+    name: Test, Build Tor Transports & Package Android APKs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      ANDROID_NDK_VERSION: '28.2.13676358'
+      CHANNEL: 'prod'
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Go 1.24 for Core tests and Tor Pluggable Transports
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.0'
+          cache-dependency-path: hiddify-core/go.sum
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK platform, build tools and pinned NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;${ANDROID_NDK_VERSION}" \
+            "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          test -d "${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"
+
+      - name: Set up Flutter 3.38.5
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.5'
+          channel: stable
+          cache: true
+
+      - name: Build Tor Pluggable Transports (Snowflake & obfs4/lyrebird) for Android ABIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build_tor_transports.sh
+          bash scripts/build_tor_transports.sh
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            test -s "android/app/src/main/jniLibs/${abi}/liblyrebird.so"
+            test -s "android/app/src/main/jniLibs/${abi}/libsnowflake.so"
+          done
+
+      - name: Prepare official Hiddify Core v5.9.15 Android AAR
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHANNEL=prod make android-libs
+          test -s android/app/libs/hiddify-core.aar
+          ls -lh android/app/libs/hiddify-core.aar
+
+      - name: Run Go Core Tor-mode security & regression unit tests
+        working-directory: hiddify-core
+        run: go test -v ./v2/config/...
+
+      - name: Resolve Flutter dependencies
+        run: flutter pub get
+
+      - name: Generate Dart and localization code
+        run: |
+          dart run build_runner build --delete-conflicting-outputs
+          dart run slang
+
+      - name: Analyze Flutter & Dart code
+        run: flutter analyze --no-pub
+
+      - name: Run Flutter unit and Tor security tests
+        run: flutter test --no-pub test/features/tor/
+
+      - name: Run full Flutter test suite
+        run: flutter test --no-pub
+
+      - name: Build Android release APKs (per-ABI and universal)
+        run: |
+          set -euo pipefail
+          flutter build apk --release --split-per-abi --no-pub
+          flutter build apk --release --no-pub
+
+      - name: Verify APK outputs and packaged Tor transport binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-apks
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk dist-apks/VisionVPN-Android-arm64-v8a.apk
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk dist-apks/VisionVPN-Android-armeabi-v7a.apk
+          cp build/app/outputs/flutter-apk/app-x86_64-release.apk dist-apks/VisionVPN-Android-x86_64.apk
+          cp build/app/outputs/flutter-apk/app-release.apk dist-apks/VisionVPN-Android-universal.apk
+          ls -lh dist-apks/
+          # Verify real Snowflake and obfs4 (lyrebird) binaries are packaged inside the arm64 APK.
+          unzip -l dist-apks/VisionVPN-Android-arm64-v8a.apk | grep -q "lib/arm64-v8a/libsnowflake.so"
+          unzip -l dist-apks/VisionVPN-Android-arm64-v8a.apk | grep -q "lib/arm64-v8a/liblyrebird.so"
+          echo "Verified Snowflake and obfs4 binaries inside built APK."
+
+      - name: Upload Vision VPN Android APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: visionvpn-android-apks-${{ github.run_number }}
+          path: dist-apks/*.apk
+          if-no-files-found: error
+          retention-days: 14
