@@ -116,14 +116,14 @@ jobs:
       - name: Run full Flutter test suite
         run: flutter test --no-pub
 
-      - name: Configure Gradle Google Maven Central mirror (prevent HTTP 429 rate-limiting)
+      - name: Configure Gradle Google Maven Central mirror (in-place rewrite, avoid HTTP 429)
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "${HOME}/.gradle/init.d"
           cat << 'GRADLE_EOF' > "${HOME}/.gradle/init.d/maven-mirror.gradle"
           def googleMirrorUrl = "https://maven-central.storage-download.googleapis.com/maven2"
-          def addMirror = { RepositoryHandler repos ->
+          def rewriteMavenCentral = { RepositoryHandler repos ->
               repos.all { ArtifactRepository repo ->
                   if (repo instanceof MavenArtifactRepository) {
                       def url = repo.url.toString()
@@ -133,17 +133,16 @@ jobs:
                       }
                   }
               }
-              repos.maven { url = uri(googleMirrorUrl) }
           }
           beforeSettings { settings ->
-              addMirror(settings.pluginManagement.repositories)
-              addMirror(settings.dependencyResolutionManagement.repositories)
+              rewriteMavenCentral(settings.pluginManagement.repositories)
+              rewriteMavenCentral(settings.dependencyResolutionManagement.repositories)
           }
           allprojects {
               buildscript {
-                  addMirror(repositories)
+                  rewriteMavenCentral(repositories)
               }
-              addMirror(repositories)
+              rewriteMavenCentral(repositories)
           }
           GRADLE_EOF
 
