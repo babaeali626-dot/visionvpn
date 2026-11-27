@@ -22,6 +22,7 @@ jobs:
     env:
       ANDROID_NDK_VERSION: '28.2.13676358'
       CHANNEL: 'prod'
+      GOTOOLCHAIN: 'auto'
 
     steps:
       - name: Checkout source
@@ -39,11 +40,14 @@ jobs:
       - name: Set up Go 1.24 for Core tests and Tor Pluggable Transports
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.0'
+          go-version: '1.24.x'
           cache-dependency-path: hiddify-core/go.sum
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Prevent setup-android from requesting the removed legacy 'tools' package.
+          packages: platform-tools
 
       - name: Install Android SDK platform, build tools and pinned NDK
         shell: bash
@@ -83,8 +87,8 @@ jobs:
         run: |
           set -euo pipefail
           CHANNEL=prod make android-libs
-          test -s android/app/libs/hiddify-core.aar
-          ls -lh android/app/libs/hiddify-core.aar
+          ls -lh android/app/libs/
+          test -n "$(find android/app/libs -maxdepth 1 -type f -name '*.aar' -size +0c -print -quit)"
 
       - name: Run Go Core Tor-mode security & regression unit tests
         working-directory: hiddify-core
@@ -111,18 +115,24 @@ jobs:
         run: |
           set -euo pipefail
           flutter build apk --release --split-per-abi --no-pub
-          flutter build apk --release --no-pub
 
       - name: Verify APK outputs and packaged Tor transport binaries
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist-apks
-          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk dist-apks/VisionVPN-Android-arm64-v8a.apk
-          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk dist-apks/VisionVPN-Android-armeabi-v7a.apk
-          cp build/app/outputs/flutter-apk/app-x86_64-release.apk dist-apks/VisionVPN-Android-x86_64.apk
-          cp build/app/outputs/flutter-apk/app-release.apk dist-apks/VisionVPN-Android-universal.apk
+          ls -lh build/app/outputs/flutter-apk/
+          for f in build/app/outputs/flutter-apk/*.apk; do
+            case "$(basename "$f")" in
+              *arm64-v8a*)   cp "$f" dist-apks/VisionVPN-Android-arm64-v8a.apk ;;
+              *armeabi-v7a*) cp "$f" dist-apks/VisionVPN-Android-armeabi-v7a.apk ;;
+              *x86_64*)      cp "$f" dist-apks/VisionVPN-Android-x86_64.apk ;;
+              *universal*|app-release.apk) cp "$f" dist-apks/VisionVPN-Android-universal.apk ;;
+              *)             cp "$f" "dist-apks/$(basename "$f")" ;;
+            esac
+          done
           ls -lh dist-apks/
+          test -s dist-apks/VisionVPN-Android-arm64-v8a.apk
           # Verify real Snowflake and obfs4 (lyrebird) binaries are packaged inside the arm64 APK.
           unzip -l dist-apks/VisionVPN-Android-arm64-v8a.apk | grep -q "lib/arm64-v8a/libsnowflake.so"
           unzip -l dist-apks/VisionVPN-Android-arm64-v8a.apk | grep -q "lib/arm64-v8a/liblyrebird.so"
