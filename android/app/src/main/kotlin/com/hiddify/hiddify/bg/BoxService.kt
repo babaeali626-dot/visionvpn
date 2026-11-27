@@ -333,7 +333,7 @@ class BoxService(
      * while the VPN is up, immediately stop sing-box and hold a blackhole TUN in VPNService so
      * zero device traffic can leak to the direct network.
      */
-    private val torFailClosedListener = object : TorEngineManager.FailClosedListener {
+    private val torFailClosedListener: TorEngineManager.FailClosedListener = object : TorEngineManager.FailClosedListener {
         override fun onTorFailClosed(reason: String) {
             if (!Settings.torModeEnabled) return
             Log.e(TAG, "Tor fail-closed triggered while BoxService status=${status.value}: $reason")
@@ -347,11 +347,7 @@ class BoxService(
                 // 2. Stop sing-box core so no connections can continue or fall back.
                 runCatching { Mobile.stop() }
                 // 3. Close the previous sing-box TUN descriptor (blackhole TUN now holds the routes).
-                TorEngineManager.get(service).removeFailClosedListener(torFailClosedListener)
-        if (service is VPNService) {
-            service.exitFailClosedBlackhole()
-        }
-        fileDescriptor?.let {
+                fileDescriptor?.let {
                     runCatching { it.close() }
                     fileDescriptor = null
                 }
@@ -425,6 +421,10 @@ class BoxService(
                 receiverRegistered = false
             }
             notification.close()
+        }
+        TorEngineManager.get(service).removeFailClosedListener(torFailClosedListener)
+        if (service is VPNService) {
+            service.exitFailClosedBlackhole()
         }
         fileDescriptor?.let {
             it.close()
