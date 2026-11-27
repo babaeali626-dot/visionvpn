@@ -38,6 +38,7 @@ part 'routing_config_notifier.g.dart';
 final branchesScope = <String, FocusScopeNode>{
   'home': FocusScopeNode(),
   'profiles': FocusScopeNode(),
+  'tor': FocusScopeNode(),
   'settings': FocusScopeNode(),
   'logs': FocusScopeNode(),
   'about': FocusScopeNode(),
@@ -49,11 +50,11 @@ final loadingConfig = RoutingConfig(
 );
 
 String getNameOfBranch(bool isMobileBreakpoint, bool showProfilesAction, int index) => isMobileBreakpoint
-    ? ['home', 'settings'][index]
+    ? ['home', 'profiles', 'tor', 'settings'][index]
     : ['home', if (showProfilesAction) 'profiles', 'settings', 'logs', 'about'][index];
 
 int getIndexOfBranch(bool isMobileBreakpoint, bool showProfilesAction, String name) => isMobileBreakpoint
-    ? ['home', 'settings'].indexOf(name)
+    ? ['home', 'profiles', 'tor', 'settings'].indexOf(name)
     : ['home', if (showProfilesAction) 'profiles', 'settings', 'logs', 'about'].indexOf(name);
 
 @Riverpod(keepAlive: true)
@@ -135,21 +136,12 @@ class RoutingConfigNotifier extends _$RoutingConfigNotifier {
                       pageBuilder: (_, state) =>
                           customTransition(TransitionType.fade, state.pageKey, const ProxiesOverviewPage()),
                     ),
-                    if (isMobileBreakpoint)
-                      GoRoute(
-                        name: 'profileDetails',
-                        path: 'profile-details/:id',
-                        pageBuilder: (_, state) => customTransition(
-                          TransitionType.fade,
-                          state.pageKey,
-                          ProfileDetailsPage(id: state.pathParameters['id']!),
-                        ),
-                      ),
+
                   ],
                 ),
               ],
             ),
-            if (showProfilesAction)
+            if (isMobileBreakpoint || showProfilesAction)
               StatefulShellBranch(
                 routes: <GoRoute>[
                   GoRoute(
@@ -167,6 +159,16 @@ class RoutingConfigNotifier extends _$RoutingConfigNotifier {
                         ),
                       ),
                     ],
+                  ),
+                ],
+              ),
+            if (isMobileBreakpoint)
+              StatefulShellBranch(
+                routes: <GoRoute>[
+                  GoRoute(
+                    name: 'tor',
+                    path: '/tor',
+                    builder: (_, _) => FocusScope(node: branchesScope['tor'], child: const TorPage()),
                   ),
                 ],
               ),
@@ -266,11 +268,12 @@ class RoutingConfigNotifier extends _$RoutingConfigNotifier {
                       pageBuilder: (_, state) =>
                           customTransition(TransitionType.slide, state.pageKey, const TlsTricksPage()),
                     ),
-                    GoRoute(
-                      name: 'tor',
-                      path: 'tor',
-                      pageBuilder: (_, state) => customTransition(TransitionType.slide, state.pageKey, const TorPage()),
-                    ),
+                    if (!isMobileBreakpoint)
+                      GoRoute(
+                        name: 'tor',
+                        path: 'tor',
+                        pageBuilder: (_, state) => customTransition(TransitionType.slide, state.pageKey, const TorPage()),
+                      ),
                     GoRoute(
                       name: 'chainOptions',
                       path: 'chain-options',

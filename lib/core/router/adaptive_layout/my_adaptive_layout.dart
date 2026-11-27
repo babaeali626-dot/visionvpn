@@ -17,7 +17,7 @@ class MyAdaptiveLayout extends HookConsumerWidget {
     required this.isMobileBreakpoint,
     required this.showProfilesAction,
   });
-  // managed by go router(Shell Route)
+
   final StatefulNavigationShell navigationShell;
   final bool isMobileBreakpoint;
   final bool showProfilesAction;
@@ -25,9 +25,9 @@ class MyAdaptiveLayout extends HookConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final t = ref.watch(translationsProvider).requireValue;
-    // focus switch management
     final primaryFocusHash = useState<int?>(null);
     final navScopeNode = useFocusScopeNode();
+
     useEffect(() {
       bool handler(KeyEvent event) {
         final arrows = isMobileBreakpoint ? KeyboardConst.verticalArrows : KeyboardConst.horizontalArrows;
@@ -35,7 +35,6 @@ class MyAdaptiveLayout extends HookConsumerWidget {
         if (event is KeyDownEvent) {
           primaryFocusHash.value = FocusManager.instance.primaryFocus.hashCode;
         } else {
-          // focus node does not change => true.
           if (primaryFocusHash.value == FocusManager.instance.primaryFocus.hashCode) {
             if (branchesScope.values.any((node) => node.hasFocus)) {
               navScopeNode.requestFocus();
@@ -53,38 +52,21 @@ class MyAdaptiveLayout extends HookConsumerWidget {
         HardwareKeyboard.instance.removeHandler(handler);
       };
     }, [isMobileBreakpoint, showProfilesAction, navigationShell.currentIndex]);
-    // Owns the system back press for the whole shell.
-    //
-    // It has to sit here, on the visible shell, and nowhere else. A PopScope
-    // inside a branch stays mounted after the user leaves that branch, and go
-    // router then lets it answer presses meant for another branch, which locks
-    // the back button for good (flutter/flutter#193098).
-    //
-    // canPop is always false so the platform always routes the press to us.
-    // Otherwise Android closes the app without calling into Flutter at all, and
-    // no callback of ours ever runs. A press that a branch can handle is popped
-    // by go router before it reaches here, so this only sees presses at the
-    // root of a branch.
+
+    final actions = _actions(t, showProfilesAction, isMobileBreakpoint);
+    final safeSelectedIndex = navigationShell.currentIndex.clamp(0, actions.length - 1);
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
         final homeIndex = getIndexOfBranch(isMobileBreakpoint, showProfilesAction, 'home');
         if (navigationShell.currentIndex != homeIndex) {
-          // on another branch: go home instead of closing the app
           navigationShell.goBranch(homeIndex);
         } else {
-          // already home: this is the way out of the app
           SystemNavigator.pop();
         }
       },
-      // Keeps the claim above alive on the platform side.
-      //
-      // Every branch navigator broadcasts whether it can handle a back press,
-      // and the last broadcast wins. Popping a page inside a branch leaves it
-      // reporting "cannot handle", which reaches Android and makes it close the
-      // app on the next press without ever calling Flutter. The PopScope above
-      // always handles the press, so that report is wrong: replace it.
       child: NotificationListener<NavigationNotification>(
         onNotification: (notification) {
           if (notification.canHandlePop) return false;
@@ -93,6 +75,7 @@ class MyAdaptiveLayout extends HookConsumerWidget {
         },
         child: Material(
           child: Scaffold(
+            extendBody: isMobileBreakpoint,
             body: isMobileBreakpoint
                 ? navigationShell
                 : Row(
@@ -101,8 +84,8 @@ class MyAdaptiveLayout extends HookConsumerWidget {
                         node: navScopeNode,
                         child: NavigationRail(
                           extended: Breakpoint(context).isDesktop(),
-                          destinations: _navRailDests(_actions(t, showProfilesAction, isMobileBreakpoint)),
-                          selectedIndex: navigationShell.currentIndex,
+                          destinations: _navRailDests(actions),
+                          selectedIndex: safeSelectedIndex,
                           onDestinationSelected: (index) => _onTap(context, index),
                           trailing: Breakpoint(context).isDesktop()
                               ? const Expanded(
@@ -114,23 +97,16 @@ class MyAdaptiveLayout extends HookConsumerWidget {
                               : null,
                         ),
                       ),
-                      // Keeps the rail visible to screen readers (#2097).
-                      //
-                      // Every page route draws a modal barrier, and its
-                      // BlockSemantics drops all the semantics painted before
-                      // it, up to the nearest container. Without this boundary
-                      // that reached the rail, so NVDA saw no sidebar at all
-                      // (flutter/flutter#135656).
                       Expanded(child: Semantics(container: true, child: navigationShell)),
                     ],
                   ),
             bottomNavigationBar: isMobileBreakpoint
                 ? FocusScope(
                     node: navScopeNode,
-                    child: NavigationBar(
-                      selectedIndex: navigationShell.currentIndex <= 1 ? navigationShell.currentIndex : 0,
-                      destinations: _navDests(_actions(t, showProfilesAction, isMobileBreakpoint)),
-                      onDestinationSelected: (index) => _onTap(context, index),
+                    child: _VisionFloatingNavBar(
+                      actions: actions,
+                      selectedIndex: safeSelectedIndex,
+                      onSelected: (index) => _onTap(context, index),
                     ),
                   )
                 : null,
@@ -140,21 +116,147 @@ class MyAdaptiveLayout extends HookConsumerWidget {
     );
   }
 
-  // shell route action onTap
   void _onTap(BuildContext context, int index) {
     navigationShell.goBranch(index, initialLocation: index == navigationShell.currentIndex);
   }
 
   List<ShellRouteAction> _actions(Translations t, bool showProfilesAction, bool isMobileBreakpoint) => [
-    ShellRouteAction(Icons.power_settings_new_rounded, t.pages.home.title),
-    if (showProfilesAction && !isMobileBreakpoint) ShellRouteAction(Icons.view_list_rounded, t.pages.profiles.title),
-    ShellRouteAction(Icons.settings_rounded, t.pages.settings.title),
+    ShellRouteAction(Icons.home_rounded, t.pages.home.title),
+    if (isMobileBreakpoint || showProfilesAction) ShellRouteAction(Icons.layers_rounded, t.pages.profiles.title),
+    if (isMobileBreakpoint) const ShellRouteAction(Icons.shield_moon_rounded, 'Tor'),
+    ShellRouteAction(Icons.tune_rounded, t.pages.settings.title),
     if (!isMobileBreakpoint) ShellRouteAction(Icons.description_rounded, t.pages.logs.title),
     if (!isMobileBreakpoint) ShellRouteAction(Icons.info_rounded, t.pages.about.title),
   ];
 
-  List<NavigationDestination> _navDests(List<ShellRouteAction> actions) =>
-      actions.map((e) => NavigationDestination(icon: Icon(e.icon), label: e.title)).toList();
   List<NavigationRailDestination> _navRailDests(List<ShellRouteAction> actions) =>
       actions.map((e) => NavigationRailDestination(icon: Icon(e.icon), label: Text(e.title))).toList();
+}
+
+class _VisionFloatingNavBar extends StatelessWidget {
+  const _VisionFloatingNavBar({
+    required this.actions,
+    required this.selectedIndex,
+    required this.onSelected,
+  });
+
+  final List<ShellRouteAction> actions;
+  final int selectedIndex;
+  final ValueChanged<int> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+        child: Container(
+          height: 66,
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xF0110829) : theme.colorScheme.surface.withValues(alpha: 0.96),
+            borderRadius: BorderRadius.circular(32),
+            border: Border.all(
+              color: isDark ? const Color(0x668B5CF6) : theme.colorScheme.outlineVariant,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: isDark ? const Color(0x557C3AED) : Colors.black.withValues(alpha: 0.12),
+                blurRadius: 20,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          child: Row(
+            children: [
+              for (var i = 0; i < actions.length; i++)
+                Expanded(
+                  child: _FloatingNavItem(
+                    action: actions[i],
+                    selected: i == selectedIndex,
+                    isDark: isDark,
+                    onTap: () => onSelected(i),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FloatingNavItem extends StatelessWidget {
+  const _FloatingNavItem({
+    required this.action,
+    required this.selected,
+    required this.isDark,
+    required this.onTap,
+  });
+
+  final ShellRouteAction action;
+  final bool selected;
+  final bool isDark;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final activeColor = Colors.white;
+    final inactiveColor = isDark ? const Color(0xFF9CA3AF) : Theme.of(context).colorScheme.onSurfaceVariant;
+
+    return Semantics(
+      selected: selected,
+      button: true,
+      label: action.title,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(24),
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(24),
+            gradient: selected
+                ? const LinearGradient(
+                    colors: [Color(0xFF6D28D9), Color(0xFF8B5CF6)],
+                  )
+                : null,
+            boxShadow: selected
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF8B5CF6).withValues(alpha: 0.4),
+                      blurRadius: 12,
+                    ),
+                  ]
+                : null,
+          ),
+          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                action.icon,
+                size: 21,
+                color: selected ? activeColor : inactiveColor,
+              ),
+              const SizedBox(height: 2),
+              Text(
+                action.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                  color: selected ? activeColor : inactiveColor,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

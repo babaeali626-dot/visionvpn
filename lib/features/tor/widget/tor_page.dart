@@ -77,16 +77,17 @@ class _TorPageState extends ConsumerState<TorPage> {
     final snap = torState.snapshot;
     final theme = Theme.of(context);
 
-    final isConnected = torState.phase == TorVpnPhase.connected && torState.vpnActive;
+    final isVpnConnected = torState.phase == TorVpnPhase.connected && torState.vpnActive;
     final isFailClosed = torState.phase == TorVpnPhase.failClosed || snap.failClosed;
+    final canStop = torState.phase != TorVpnPhase.stopped || snap.state != 'STOPPED' || torState.vpnActive || isFailClosed;
     final statusColor = isFailClosed
         ? theme.colorScheme.error
-        : (isConnected ? Colors.teal : theme.colorScheme.primary);
+        : (isVpnConnected ? const Color(0xFF2DD4BF) : const Color(0xFFA855F7));
 
     return Scaffold(
       appBar: AppBar(title: const Text('Vision VPN · Tor')),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 112),
         children: [
           Card(
             child: Padding(
@@ -126,47 +127,38 @@ class _TorPageState extends ConsumerState<TorPage> {
                 children: [
                   Icon(
                     isFailClosed ? Icons.gpp_bad_rounded : Icons.shield_moon_rounded,
-                    size: 64,
+                    size: 60,
                     color: statusColor,
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    isFailClosed
-                        ? 'FAIL-CLOSED (TRAFFIC BLOCKED)'
-                        : _phaseLabel(torState.phase),
-                    style: theme.textTheme.titleLarge?.copyWith(color: statusColor),
+                    isFailClosed ? 'FAIL-CLOSED (TRAFFIC BLOCKED)' : _phaseLabel(torState.phase),
+                    style: theme.textTheme.titleLarge?.copyWith(color: statusColor, fontWeight: FontWeight.bold),
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 12),
                   LinearProgressIndicator(value: snap.bootstrap.clamp(0, 100) / 100),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Tor Bootstrap: ${snap.bootstrap}%'
-                    '${snap.bootstrapSummary != null ? ' · ${snap.bootstrapSummary}' : ''}',
-                    textAlign: TextAlign.center,
+                  const SizedBox(height: 12),
+                  // Separate 4-layer status breakdown (Daemon, Bootstrap, SOCKS5, VPN Tunnel)
+                  _StatusRow(label: 'Tor Engine', value: snap.state),
+                  _StatusRow(
+                    label: 'Bootstrap',
+                    value: '${snap.bootstrap}%${snap.bootstrapSummary != null ? ' · ${snap.bootstrapSummary}' : ''}',
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Transport: ${torState.transportMode.label}'
-                    ' (active: ${snap.activeTransport})',
-                    style: theme.textTheme.bodyMedium,
+                  _StatusRow(
+                    label: 'SOCKS5 Loopback',
+                    value: snap.socksPort != null ? '${snap.socksHost}:${snap.socksPort} (Verified)' : 'Not ready',
                   ),
-                  if (snap.transportStatus != null) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      snap.transportStatus!,
-                      style: theme.textTheme.bodySmall,
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                  if (snap.socksPort != null) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      'Verified SOCKS5: ${snap.socksHost}:${snap.socksPort} (TCP only, UDP blocked, DNS over Tor)',
-                      style: theme.textTheme.bodySmall,
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
+                  _StatusRow(
+                    label: 'VPN Tunnel',
+                    value: isFailClosed
+                        ? 'Blocked (Fail-Closed)'
+                        : (isVpnConnected ? 'Active (TCP + DNS over Tor, UDP blocked)' : 'Inactive'),
+                  ),
+                  _StatusRow(
+                    label: 'Transport',
+                    value: '${torState.transportMode.label} (active: ${snap.activeTransport})',
+                  ),
                   if (torState.lastError != null || snap.transportError != null) ...[
                     const SizedBox(height: 8),
                     Text(
@@ -181,7 +173,7 @@ class _TorPageState extends ConsumerState<TorPage> {
                     runSpacing: 8,
                     alignment: WrapAlignment.center,
                     children: [
-                      if (!isConnected && !isFailClosed)
+                      if (!isVpnConnected && !isFailClosed)
                         FilledButton.icon(
                           onPressed: torState.isBusy
                               ? null
@@ -197,13 +189,11 @@ class _TorPageState extends ConsumerState<TorPage> {
                           icon: const Icon(Icons.refresh_rounded),
                           label: const Text('Recover Safely'),
                         ),
-                      if (isConnected || isFailClosed || torState.isBusy)
+                      if (canStop)
                         OutlinedButton.icon(
-                          onPressed: torState.phase == TorVpnPhase.stopping
-                              ? null
-                              : () => notifier.disconnectTorVpn(),
+                          onPressed: () => notifier.disconnectTorVpn(),
                           icon: const Icon(Icons.stop_rounded),
-                          label: const Text('Disconnect'),
+                          label: const Text('Stop / Disconnect'),
                         ),
                     ],
                   ),
@@ -241,8 +231,9 @@ class _TorPageState extends ConsumerState<TorPage> {
                         : (selection) => notifier.setTransportMode(selection.first),
                   ),
                   const SizedBox(height: 10),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
                     children: [
                       _TransportChip(label: 'Snowflake', available: snap.snowflakeAvailable),
                       _TransportChip(label: 'obfs4 (lyrebird)', available: snap.obfs4Available),
@@ -304,16 +295,49 @@ class _TorPageState extends ConsumerState<TorPage> {
 
   String _phaseLabel(TorVpnPhase phase) => switch (phase) {
     TorVpnPhase.stopped => 'Disconnected',
-    TorVpnPhase.startingTor => 'Starting Tor...',
+    TorVpnPhase.startingTor => 'Starting Tor Process...',
     TorVpnPhase.bootstrapping => 'Bootstrapping Tor...',
     TorVpnPhase.verifyingSocks => 'Verifying SOCKS5...',
-    TorVpnPhase.startingVpn => 'Starting Tor VPN...',
-    TorVpnPhase.connected => 'Connected via Tor',
+    TorVpnPhase.startingVpn => 'Starting Tor VPN Tunnel...',
+    TorVpnPhase.connected => 'Tor VPN Connected',
     TorVpnPhase.failClosed => 'Fail-Closed (Traffic Blocked)',
     TorVpnPhase.recovering => 'Recovering Tor...',
-    TorVpnPhase.stopping => 'Disconnecting...',
+    TorVpnPhase.stopping => 'Stopping...',
     TorVpnPhase.error => 'Connection Error',
   };
+}
+
+class _StatusRow extends StatelessWidget {
+  const _StatusRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 118,
+            child: Text(
+              label,
+              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _TransportChip extends StatelessWidget {
@@ -328,7 +352,7 @@ class _TransportChip extends StatelessWidget {
       avatar: Icon(
         available ? Icons.check_circle_outline : Icons.warning_amber_rounded,
         size: 18,
-        color: available ? Colors.teal : Colors.orange,
+        color: available ? const Color(0xFF2DD4BF) : Colors.orange,
       ),
       label: Text('$label: ${available ? 'Ready' : 'Binary Missing'}'),
     );

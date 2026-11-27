@@ -141,6 +141,7 @@ class SettingsPage extends HookConsumerWidget {
         ],
       ),
       body: ListView(
+        padding: const EdgeInsets.only(bottom: 104),
         children: [
           // TipCard(message: t.settings.experimentalMsg),
           SettingsSection(

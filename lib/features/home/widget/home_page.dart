@@ -314,7 +314,7 @@ class HomePage extends HookConsumerWidget {
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                     trailing: const Icon(Icons.tune_rounded, color: Color(0xFFA855F7)),
-                                    onTap: () => context.pushNamed('tor'),
+                                    onTap: () => context.goNamed('tor'),
                                   ),
                                 ),
                               )
@@ -338,7 +338,7 @@ class HomePage extends HookConsumerWidget {
                                       margin: EdgeInsets.zero,
                                       child: InkWell(
                                         borderRadius: BorderRadius.circular(18),
-                                        onTap: () => context.pushNamed('tor'),
+                                        onTap: () => context.goNamed('tor'),
                                         child: Padding(
                                           padding: const EdgeInsets.all(14),
                                           child: Column(
