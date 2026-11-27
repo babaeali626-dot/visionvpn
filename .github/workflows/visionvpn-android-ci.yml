@@ -116,7 +116,7 @@ jobs:
       - name: Run full Flutter test suite
         run: flutter test --no-pub
 
-      - name: Configure Gradle Google Maven Central mirror (in-place rewrite, avoid HTTP 429)
+      - name: Configure Gradle Google Maven Central mirror (bypass plugins.gradle.org -> Maven Central 429)
         shell: bash
         run: |
           set -euo pipefail
@@ -145,6 +145,24 @@ jobs:
               rewriteMavenCentral(repositories)
           }
           GRADLE_EOF
+
+          # Ensure Flutter's included :gradle build resolves Kotlin/Maven artifacts from Google's
+          # mirror BEFORE gradlePluginPortal() (which 302-redirects to rate-limited repo.maven.apache.org).
+          FLUTTER_GRADLE_DIR="${FLUTTER_ROOT}/packages/flutter_tools/gradle"
+          for kts in "${FLUTTER_GRADLE_DIR}/settings.gradle.kts" "${FLUTTER_GRADLE_DIR}/build.gradle.kts"; do
+            if [[ -f "${kts}" ]]; then
+              python3 - "${kts}" << 'PYEOF'
+          import pathlib, sys
+          p = pathlib.Path(sys.argv[1])
+          text = p.read_text(encoding="utf-8")
+          mirror = 'maven(url = "https://maven-central.storage-download.googleapis.com/maven2")\n        gradlePluginPortal()'
+          if "maven-central.storage-download.googleapis.com" not in text and "gradlePluginPortal()" in text:
+              text = text.replace("gradlePluginPortal()", mirror)
+              p.write_text(text, encoding="utf-8")
+              print(f"Patched {p} to check Google Maven mirror before gradlePluginPortal()")
+          PYEOF
+            fi
+          done
 
       - name: Build Android release APKs (per-ABI and universal)
         shell: bash
