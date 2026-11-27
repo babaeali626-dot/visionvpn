@@ -1,0 +1,94 @@
+name: VisionVPN Test Branch CI
+
+on:
+  push:
+    branches: [test]
+  pull_request:
+    branches: [test]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: visionvpn-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tor-overlay-validation:
+    name: Validate Tor overlay (Dart tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.5'
+          channel: stable
+          cache: true
+
+      - name: Verify overlay layout and report build scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f packages/vision_tor/pubspec.yaml
+          test -f packages/vision_tor/lib/vision_tor_plugin.dart
+          test -f packages/vision_tor/android/src/main/kotlin/net/visionvpn/tor/VisionTorPlugin.kt
+          test -f scripts/check_tor_notices.py
+          test -f core/tor_socks_outbound.json
+          if [[ -f pubspec.yaml && -f Makefile && -f lib/main.dart ]]; then
+            echo "A complete Flutter application tree is present."
+            echo "A full Android APK build can be added after verifying the app's upstream integration."
+            echo "### Build scope" >> "$GITHUB_STEP_SUMMARY"
+            echo "Complete Flutter application files are present; this workflow currently validates the Tor overlay package." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::notice::This branch contains the VisionVPN Tor overlay only. The root Hiddify pubspec.yaml, Makefile and lib/main.dart are absent, so a full Hiddify APK cannot be built from this branch yet."
+            {
+              echo "### Build scope"
+              echo "This commit contains the Tor overlay package, not the complete Hiddify application. Root pubspec.yaml, Makefile and lib/main.dart are absent; no full APK is produced by this workflow."
+              echo "The workflow validates the standalone Tor Flutter package and its declared notices."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Resolve Tor plugin dependencies
+        working-directory: packages/vision_tor
+        run: flutter pub get
+
+      - name: Check Dart formatting
+        working-directory: packages/vision_tor
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Analyze Tor plugin
+        working-directory: packages/vision_tor
+        run: flutter analyze --no-pub
+
+      - name: Run Tor plugin unit tests
+        working-directory: packages/vision_tor
+        run: flutter test --no-pub --reporter expanded
+
+      - name: Verify Tor dependency and attribution notices
+        run: python3 scripts/check_tor_notices.py
+
+      - name: Validate JSON and Android XML resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          roots = [Path("core"), Path("packages/vision_tor"), Path("android/branding")]
+          json_files = [p for root in roots if root.exists() for p in root.rglob("*.json")]
+          xml_files = [p for root in roots if root.exists() for p in root.rglob("*.xml")]
+          for path in json_files:
+              json.loads(path.read_text(encoding="utf-8"))
+          for path in xml_files:
+              ET.parse(path)
+          print(f"Validated {len(json_files)} JSON and {len(xml_files)} XML files.")
+          PY
+
+      - name: Check patch whitespace
+        run: git diff --check
