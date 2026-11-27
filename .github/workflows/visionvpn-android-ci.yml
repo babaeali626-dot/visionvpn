@@ -116,10 +116,52 @@ jobs:
       - name: Run full Flutter test suite
         run: flutter test --no-pub
 
-      - name: Build Android release APKs (per-ABI and universal)
+      - name: Configure Gradle Google Maven Central mirror (prevent HTTP 429 rate-limiting)
+        shell: bash
         run: |
           set -euo pipefail
-          flutter build apk --release --split-per-abi --no-pub
+          mkdir -p "${HOME}/.gradle/init.d"
+          cat << 'GRADLE_EOF' > "${HOME}/.gradle/init.d/maven-mirror.gradle"
+          def googleMirrorUrl = "https://maven-central.storage-download.googleapis.com/maven2"
+          def addMirror = { RepositoryHandler repos ->
+              repos.all { ArtifactRepository repo ->
+                  if (repo instanceof MavenArtifactRepository) {
+                      def url = repo.url.toString()
+                      if (url.startsWith("https://repo.maven.apache.org/maven2") ||
+                          url.startsWith("https://repo1.maven.org/maven2")) {
+                          repo.setUrl(googleMirrorUrl)
+                      }
+                  }
+              }
+              repos.maven { url = uri(googleMirrorUrl) }
+          }
+          beforeSettings { settings ->
+              addMirror(settings.pluginManagement.repositories)
+              addMirror(settings.dependencyResolutionManagement.repositories)
+          }
+          allprojects {
+              buildscript {
+                  addMirror(repositories)
+              }
+              addMirror(repositories)
+          }
+          GRADLE_EOF
+
+      - name: Build Android release APKs (per-ABI and universal)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "==> Gradle APK build attempt ${attempt}/3"
+            if flutter build apk --release --split-per-abi --no-pub; then
+              exit 0
+            fi
+            if [[ "${attempt}" -lt 3 ]]; then
+              echo "Build attempt ${attempt} failed; waiting 20s before retry..."
+              sleep 20
+            fi
+          done
+          exit 1
 
       - name: Verify APK outputs and packaged Tor transport binaries
         shell: bash
